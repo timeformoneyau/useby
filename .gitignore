@@ -1,0 +1,19 @@
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native build output
+/ios
+/android
+
+# Environment / secrets
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+*.log
+npm-debug.*
