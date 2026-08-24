@@ -36,6 +36,12 @@
           "cameraPermission": "UseBy uses the camera to capture the use-by date on food packaging."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "d033923f-4fce-4383-b8eb-e8af8a22c09f"
+      }
+    },
+    "owner": "mjreardno62"
   }
 }
