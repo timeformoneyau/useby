@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { RootStackParamList, ItemSource } from '../types';
+import { RootStackParamList, ItemSource, DateType } from '../types';
 import { createItem } from '../domain/items/service';
 import { todayString, formatDisplay, parseDate } from '../utils/dateUtils';
 import { colours } from '../components/colours';
@@ -21,19 +21,30 @@ type Nav = NativeStackNavigationProp<RootStackParamList, 'Add'>;
 type AddRoute = RouteProp<RootStackParamList, 'Add'>;
 
 /**
- * The single "+" Add flow.
+ * Review & Save — the one editor behind every way an item gets created.
  *
- * Ported from since-fresh's AddItemScreen, which was one screen serving two
- * modes: a repeat interval (value + days/weeks/months/years unit picker) for
- * recurring life admin, and an expiry date for scanned food, with the expiry
- * branch hiding the repeat controls. Only the expiry branch survives here, so
- * the form is name + use-by date. Also dropped: the category picker, and the
- * "suggested repeat interval" banner that guessed a cadence from names like
- * "dentist".
+ * Ported from since-fresh's AddItemScreen, which served two modes (a repeat
+ * interval for recurring life admin, an expiry date for scanned food). Only the
+ * expiry branch survives. Also dropped on the way in: the category picker and
+ * the "suggested repeat interval" banner.
  *
- * Reaching this screen from a capture keeps the same prefill contract, so
- * both entry points land in one place.
+ * It now serves all three entry points the accepted design calls for — scan
+ * review, manual entry, and (later) editing an existing item — off one prefill
+ * contract, so validation, date semantics and correction behaviour cannot drift
+ * apart between them. Arriving from a capture just means the fields start
+ * populated and some of them may be flagged for a look.
+ *
+ * The AI prefills; the user decides. Nothing here treats an extraction as
+ * authoritative, and an incomplete one is a normal state rather than an error
+ * to recover from.
  */
+
+const DATE_TYPE_OPTIONS: { value: DateType; label: string }[] = [
+  { value: 'use_by', label: 'Use By' },
+  { value: 'best_before', label: 'Best Before' },
+  { value: 'unknown', label: 'Not sure' },
+];
+
 export default function AddItemScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<AddRoute>();
@@ -42,18 +53,45 @@ export default function AddItemScreen() {
 
   const [name, setName] = useState(prefill?.name ?? '');
   const [expiryDate, setExpiryDate] = useState(prefill?.expiryDate ?? todayString());
+  const [dateType, setDateType] = useState<DateType>(prefill?.dateType ?? 'unknown');
   const [source] = useState<ItemSource>(prefill?.source ?? 'manual');
   const [showExpiryPicker, setShowExpiryPicker] = useState(false);
 
+  /**
+   * Attention flags, not error states. They start from what the read returned
+   * and clear as soon as the user touches the field — once they have looked at
+   * it, it has been checked, whatever the model thought of it.
+   */
+  const [checkName, setCheckName] = useState(prefill?.needsNameCheck ?? false);
+  const [checkDate, setCheckDate] = useState(prefill?.needsDateCheck ?? false);
+
+  /**
+   * A scan that read no date at all leaves the picker on today's date, which is
+   * a real value the user could save without noticing. Worth saying so.
+   */
+  const dateWasRead = prefill?.expiryDate != null;
+  const dateMissingFromScan = source === 'photo' && !dateWasRead;
+
   useEffect(() => {
+    // Don't steal focus when a scan has already filled the name in — the date
+    // is the more likely thing to need attention at that point.
+    if (prefill?.name) return;
     const timer = setTimeout(() => nameRef.current?.focus(), 100);
     return () => clearTimeout(timer);
-  }, []);
+  }, [prefill?.name]);
 
   async function handleSave() {
     const trimmed = name.trim();
     if (!trimmed) return;
 
+    // ---- Phase 3 boundary ------------------------------------------------
+    // `dateType` is reviewed and corrected above but is deliberately not
+    // persisted: `UseByItem` has no such field and the storage schema for it is
+    // Phase 3 work (D2), with the date-aware wording that consumes it in Phase
+    // 4. Widening the local schema here would mean designing it twice. What is
+    // lost today is the distinction on an already-saved item; what is kept is
+    // the date, which is what drives urgency.
+    // ----------------------------------------------------------------------
     await createItem({ name: trimmed, expiryDate, source });
     navigation.goBack();
   }
@@ -70,40 +108,88 @@ export default function AddItemScreen() {
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
       >
+        {/* Why this screen looks the way it does — a failed or partial scan
+            explains itself here rather than in an alert that has to be
+            dismissed before the form is usable. */}
+        {prefill?.notice && (
+          <View style={styles.noticeBanner}>
+            <Text style={styles.noticeText}>{prefill.notice}</Text>
+          </View>
+        )}
+
         {/* Name */}
         <View style={styles.field}>
           <TextInput
             ref={nameRef}
-            style={styles.nameInput}
+            style={[styles.nameInput, checkName && styles.inputNeedsCheck]}
             placeholder="What is it?"
             placeholderTextColor={colours.textMuted}
             value={name}
-            onChangeText={setName}
+            onChangeText={(text) => {
+              setName(text);
+              setCheckName(false);
+            }}
             autoCapitalize="sentences"
             returnKeyType="done"
           />
+          {checkName && (
+            <Text style={styles.checkHint}>
+              {name ? 'Worth checking — the label was hard to read.' : 'Add the item name to save.'}
+            </Text>
+          )}
         </View>
 
-        {/* Capture banner */}
-        {source === 'photo' && (
-          <View style={styles.captureBanner}>
-            <Text style={styles.captureBannerText}>
-              Added from a photo — type the name and use-by date you can see on the packaging.
-            </Text>
+        {/* What the package called the date. Captured at scan time because this
+            is the only moment it is cheaply available. */}
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>The package says</Text>
+          <View style={styles.segmentRow}>
+            {DATE_TYPE_OPTIONS.map((option) => {
+              const selected = dateType === option.value;
+              return (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[styles.segment, selected && styles.segmentSelected]}
+                  onPress={() => setDateType(option.value)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={option.label}
+                >
+                  <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
-        )}
+          {dateType === 'unknown' && (
+            <Text style={styles.helpHint}>
+              We'll just call it a date — no more than the pack told us.
+            </Text>
+          )}
+        </View>
 
         {/* Use by */}
         <View style={styles.fieldGroup}>
-          <Text style={styles.label}>Use by</Text>
+          <Text style={styles.label}>Date on the pack</Text>
           <TouchableOpacity
-            style={styles.rowButton}
-            onPress={() => setShowExpiryPicker(true)}
+            style={[styles.rowButton, checkDate && styles.inputNeedsCheck]}
+            onPress={() => {
+              setShowExpiryPicker(true);
+              setCheckDate(false);
+            }}
           >
             <Text style={styles.rowButtonText}>
               {formatDisplay(parseDate(expiryDate))}
             </Text>
           </TouchableOpacity>
+          {checkDate && (
+            <Text style={styles.checkHint}>
+              {dateMissingFromScan
+                ? "We couldn't read the date — set it before saving."
+                : 'Worth checking — the print was hard to read.'}
+            </Text>
+          )}
         </View>
 
         {/* Save */}
@@ -141,7 +227,7 @@ const styles = StyleSheet.create({
     borderBottomColor: colours.border,
     marginBottom: 16,
   },
-  captureBanner: {
+  noticeBanner: {
     backgroundColor: '#F1F5F1',
     borderRadius: 8,
     paddingHorizontal: 14,
@@ -150,7 +236,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#D7E5D7',
   },
-  captureBannerText: { fontSize: 13, color: colours.textSecondary, lineHeight: 18 },
+  noticeText: { fontSize: 13, color: colours.textSecondary, lineHeight: 18 },
   fieldGroup: { marginBottom: 20 },
   label: {
     fontSize: 11,
@@ -169,6 +255,30 @@ const styles = StyleSheet.create({
     borderColor: colours.border,
   },
   rowButtonText: { fontSize: 15, color: colours.textPrimary },
+
+  segmentRow: { flexDirection: 'row', gap: 8 },
+  segment: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colours.border,
+    backgroundColor: colours.surface,
+    alignItems: 'center',
+  },
+  segmentSelected: {
+    backgroundColor: colours.primary,
+    borderColor: colours.primary,
+  },
+  segmentText: { fontSize: 14, fontWeight: '500', color: colours.textPrimary },
+  segmentTextSelected: { color: '#fff', fontWeight: '600' },
+
+  /* Attention, not alarm — the soft amber from the urgency palette rather than
+     the destructive red, because nothing here has gone wrong. */
+  inputNeedsCheck: { borderColor: colours.useSoon },
+  checkHint: { fontSize: 13, color: colours.useSoon, marginTop: 6, lineHeight: 18 },
+  helpHint: { fontSize: 13, color: colours.textSecondary, marginTop: 6, lineHeight: 18 },
+
   saveBtn: {
     backgroundColor: colours.textPrimary,
     paddingVertical: 15,

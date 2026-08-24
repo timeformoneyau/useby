@@ -9,8 +9,10 @@ expo-env.d.ts
 /android
 
 # Environment / secrets
+# .env.example is the one exception: it holds names only, no values.
 .env
-.env.local
+.env.*
+!.env.example
 
 # macOS
 .DS_Store

@@ -13,42 +13,51 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { colours } from '../components/colours';
+import { scanPhoto } from '../domain/scan/client';
+import { emptyPrefill } from '../domain/scan/mapping';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
 
 /**
  * Camera capture.
  *
- * Ported from since-fresh's ScanFoodScreen with the network half removed. The
- * original POSTed the captured frame to a Vercel proxy, which called the
- * Anthropic API to read the item name and expiry date off the packaging and
- * returned them (with per-field confidence) as the Add screen's prefill.
+ * Ported from since-fresh's ScanFoodScreen. The capture, permission and resize
+ * pipeline came across intact; the parse step that was stubbed out at scaffold
+ * time is now wired to UseBy's own deployed proxy, which calls the Anthropic
+ * API and returns the item name, date and date type with a per-field
+ * confidence.
  *
- * That proxy and its API key are a later phase, so capture currently stops at
- * the resized JPEG and hands the user to the Add screen to type the details
- * themselves. The capture, permission and resize pipeline is intact and is
- * the part the parse step will plug into — see the marked seam in
- * handleCapture().
+ * The screen never blocks on that call succeeding. Whatever comes back — a
+ * clean read, a partial one, or nothing at all — the user lands in the same
+ * Review & Save editor, prefilled as far as the read allowed. A failed scan is
+ * a prefill with a note on it, not a dead end.
  */
 export default function CaptureScreen() {
   const navigation = useNavigation<Nav>();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
-  const [busy, setBusy] = useState(false);
+  /**
+   * 'capturing' covers the shutter and the resize; 'reading' covers the wait on
+   * the proxy. They are separate because the second one is the slow half and
+   * deserves to say what it is doing.
+   */
+  const [phase, setPhase] = useState<'idle' | 'capturing' | 'reading'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const busy = phase !== 'idle';
 
   async function handleCapture() {
     if (busy || !cameraRef.current) return;
     setError(null);
-    setBusy(true);
+    setPhase('capturing');
 
+    let imageBase64: string;
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
       if (!photo) throw new Error('No photo captured.');
 
-      // Resize/compress client-side. Kept from since-fresh: this is what keeps
-      // the eventual upload payload small, and it is cheap enough to leave in
-      // place while the parse step is still a stub.
+      // Resize/compress client-side. Kept from since-fresh, and now load-bearing:
+      // the proxy rejects anything over ~4.4MB decoded, and a smaller upload is
+      // a faster scan on a phone in a kitchen.
       const manipulated = await ImageManipulator.manipulateAsync(
         photo.uri,
         [{ resize: { width: 1200 } }],
@@ -56,20 +65,25 @@ export default function CaptureScreen() {
       );
 
       if (!manipulated.base64) throw new Error('Could not process the photo.');
-
-      // ---- Parse seam -------------------------------------------------
-      // Later phase: POST manipulated.base64 to the proxy, and use the
-      // returned name/date (and confidence) as the prefill below instead of
-      // the empty values.
-      // -----------------------------------------------------------------
-
-      navigation.replace('Add', {
-        prefill: { name: '', expiryDate: null, source: 'photo' },
-      });
+      imageBase64 = manipulated.base64;
     } catch {
-      setError("Couldn't use that photo — please enter the details manually.");
-      setBusy(false);
+      // The camera or the resize failed, so there is nothing to send. Stay put
+      // and let them try another shot.
+      setError("Couldn't use that photo — try again, or type it in.");
+      setPhase('idle');
+      return;
     }
+
+    setPhase('reading');
+    const result = await scanPhoto(imageBase64);
+
+    // Both branches land in the same editor. A failed read simply arrives with
+    // nothing filled in and a note saying why.
+    navigation.replace('Add', {
+      prefill: result.ok
+        ? result.prefill
+        : emptyPrefill('photo', result.message),
+    });
   }
 
   if (!permission) {
@@ -108,6 +122,13 @@ export default function CaptureScreen() {
           Frame the use-by date and the item name, then capture
         </Text>
       </View>
+
+      {phase === 'reading' && (
+        <View style={styles.readingBanner}>
+          <ActivityIndicator color="#fff" />
+          <Text style={styles.readingText}>Reading the label…</Text>
+        </View>
+      )}
 
       {error && (
         <View style={styles.errorBanner}>
@@ -171,6 +192,20 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 8,
   },
+  readingBanner: {
+    position: 'absolute',
+    bottom: 130,
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: 8,
+    padding: 12,
+  },
+  readingText: { color: '#fff', fontSize: 14 },
   errorBanner: {
     position: 'absolute',
     bottom: 130,

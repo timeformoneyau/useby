@@ -5,8 +5,12 @@ needs eating soonest sits at the top of the list.
 
 ## Status
 
-Phase 1 — local only. Everything is stored on the device with AsyncStorage.
-There is no account, no sign-in, and no network call anywhere in the app.
+Phase 2 — local storage, plus one network call. Items live on the device in
+AsyncStorage and there is still no account and no sign-in. The single outbound
+call is the camera scan: a photo goes to UseBy's own proxy, which calls the
+Anthropic API and returns the item name, date and date type for you to review
+before saving. Nothing is uploaded unless you take a photo, and the proxy keeps
+nothing — the image lives only for the length of the request.
 
 ## Requirements
 
@@ -21,7 +25,43 @@ npm install
 npm start          # then press 'a' for Android
 npm run android    # or build and run a dev client directly
 npm run typecheck
+npm test           # offline: scan response mapping. No network, no key needed.
 ```
+
+## Scanning: pointing the app at the proxy
+
+Capture posts the photo to UseBy's own proxy (`timeformoneyau/usebyproxy`),
+which calls the Anthropic API and returns the item name, date and date type.
+Two environment variables configure it — copy `.env.example` to `.env` for local
+work, and set them on the EAS build profile for a real build:
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `EXPO_PUBLIC_USEBY_PROXY_URL` | No | Proxy origin. Falls back to the production deployment. Point it at a preview deployment to test one. |
+| `EXPO_PUBLIC_USEBY_PROXY_SECRET` | For scanning | The proxy's `MOBILE_APP_SECRET`, sent as `Authorization: Bearer`. |
+
+Neither is committed. `.env` is gitignored; only `.env.example`, which holds
+names and no values, is in the repo.
+
+### The secret is a deployment guard, not authentication
+
+`EXPO_PUBLIC_` is Expo's marker for "inlined into the bundle at build time and
+readable by anyone holding the binary", and that is exactly what this value is.
+The prefix is deliberate: it keeps the caveat visible at the point of use.
+
+Its only job is stopping the deployment sitting open to anyone who guesses the
+URL and quietly running up the Anthropic bill. It does not identify a user,
+cannot be revoked per device, and rotating it means shipping a new build. Once
+real per-user sessions exist it is replaced — not supplemented — by a validated
+session token.
+
+Without it the app still runs: scanning reports itself as unavailable and the
+user goes straight to manual entry.
+
+**Local gotcha:** Metro caches the transform that inlines these values, so
+changing `.env` may not take effect until you clear the cache
+(`npx expo start --clear`). EAS builds start clean, so this only bites local
+iteration.
 
 ## Remaining setup: link the EAS project
 
@@ -48,13 +88,16 @@ npx eas-cli build --platform android --profile preview
 
 ```
 App.tsx                       navigation container (3 screens)
-src/types/                    UseByItem, status labels, nav param list
+src/types/                    UseByItem, scan contract, status labels, nav params
+src/config/proxy.ts           deployed proxy URL + deployment guard, from env
 src/domain/items/             service (the only entry point for mutations),
                               AsyncStorage persistence, derived fields
+src/domain/scan/              parse-expiry client + pure response→prefill mapping
 src/utils/dateUtils.ts        date parsing/formatting
 src/utils/statusUtils.ts      urgency ladder, sorting, card secondary line
 src/components/               ItemCard, DatePickerModal, colour tokens
 src/screens/                  MainListScreen, AddItemScreen, CaptureScreen
+scripts/                      offline tests (no network, no key)
 ```
 
 Screens never touch storage directly — all mutations go through
@@ -116,8 +159,10 @@ These are a later phase, once the accounts exist:
 
 - **Supabase** — auth screens, cloud storage, the sync engine and queue.
   App runs local-only with no sign-in step.
-- **The parse proxy + Anthropic** — capture currently ends at a resized JPEG
-  and hands you to the Add screen to type the name and date yourself. The
-  permission, capture and resize pipeline is intact; the marked seam in
-  `CaptureScreen.handleCapture()` is where the parse call plugs in.
+- **Persisting `dateType`** — the scan returns `use_by` / `best_before` /
+  `unknown` and the Review & Save editor shows and corrects it, but `UseByItem`
+  does not carry the field and it is not written to storage. The schema for it
+  is Phase 3 work, and the date-aware wording that consumes it is Phase 4. Until
+  then the list describes every item as "Use by", which is not yet truthful for
+  a best-before item.
 - **Notifications** — no `expo-notifications` dependency and no scheduler.
