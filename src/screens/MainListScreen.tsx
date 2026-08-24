@@ -2,33 +2,36 @@ import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
-  FlatList,
+  SectionList,
   TouchableOpacity,
   StyleSheet,
   StatusBar,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { UseByItem, RootStackParamList } from '../types';
 import { DerivedItem } from '../domain/items/types';
 import { getDerivedItems, removeItem } from '../domain/items/service';
+import { groupItems, headerCount } from '../domain/items/presentation';
 import ItemCard from '../components/ItemCard';
-import { colours } from '../components/colours';
+import { colours, fonts, hit, radius } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Main'>;
 
 /**
- * The urgency-sorted list.
+ * Home — what needs using next.
  *
- * Ported from since-fresh's MainListScreen. That version wrapped the list in
- * per-category SectionList groups, ordering sections by their most urgent
- * item. Categories are gone, so this is a flat FlatList and sortItems()
- * urgency order alone decides what surfaces at the top — which is the whole
- * point of the screen for a food app.
+ * Ported from since-fresh's MainListScreen, which grouped by category. That is
+ * gone; the grouping here is purely urgency, and the headings are just headings
+ * over one divided list rather than a navigation structure. Ordering inside a
+ * group is still whatever `sortItems` decided, so the urgency ladder alone
+ * decides what surfaces at the top.
  */
 export default function MainListScreen() {
   const navigation = useNavigation<Nav>();
+  const insets = useSafeAreaInsets();
   const [items, setItems] = useState<DerivedItem[]>([]);
 
   const refresh = useCallback(async () => {
@@ -46,188 +49,239 @@ export default function MainListScreen() {
     refresh();
   }
 
-  if (items.length === 0) {
-    return (
-      <SafeAreaView style={styles.safe}>
-        <StatusBar barStyle="dark-content" backgroundColor={colours.background} />
-        <View style={styles.emptyContainer}>
-          <Text style={styles.appTitle}>UseBy</Text>
-          <Text style={styles.appTagline}>Nothing goes off unnoticed</Text>
-          <Text style={styles.appSupport}>
-            Add what's in the fridge and we'll put whatever needs eating first at the top.
-          </Text>
+  const sections = groupItems(items);
 
-          <View style={styles.ctaRow}>
-            <TouchableOpacity
-              style={styles.primaryCTA}
-              onPress={() => navigation.navigate('Add')}
-            >
-              <Text style={styles.primaryCTAText}>Add an item</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.secondaryCTA}
-              onPress={() => navigation.navigate('Capture')}
-            >
-              <Text style={styles.secondaryCTAText}>📷 Capture</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  // The action bar floats over the list, so the list needs to be able to
+  // scroll clear of it.
+  const listBottomPadding = 138 + insets.bottom;
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="dark-content" backgroundColor={colours.background} />
 
-      {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>UseBy</Text>
-        <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={styles.scanBtn}
-            onPress={() => navigation.navigate('Capture')}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityLabel="Capture a use-by date"
-            accessibilityRole="button"
-          >
-            <Text style={styles.scanBtnText}>📷</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.addBtn}
-            onPress={() => navigation.navigate('Add')}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityLabel="Add an item"
-            accessibilityRole="button"
-          >
-            <Text style={styles.addBtnText}>＋</Text>
-          </TouchableOpacity>
+        <View style={styles.brand}>
+          {/* The mark: a rounded tile with one square corner, as drawn on the
+              artboard in CSS. No asset needed. */}
+          <View style={styles.mark} />
+          <Text style={styles.brandName}>UseBy</Text>
         </View>
+        {items.length > 0 && (
+          <Text style={styles.headerCount}>{headerCount(items)}</Text>
+        )}
       </View>
 
-      <FlatList<DerivedItem>
-        data={items}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <ItemCard item={item} onMarkUsed={handleRemove} onDelete={handleRemove} />
-        )}
-        contentContainerStyle={styles.list}
-        showsVerticalScrollIndicator={false}
-      />
+      {items.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <View style={styles.emptyMark} />
+          <Text style={styles.emptyTitle}>Nothing to keep an eye on yet.</Text>
+          <Text style={styles.emptyBody}>
+            Photograph food as you put it away and UseBy will tell you what to use
+            first. A few seconds per item, no lists to keep.
+          </Text>
+        </View>
+      ) : (
+        <SectionList
+          sections={sections}
+          keyExtractor={(item) => item.id}
+          stickySectionHeadersEnabled={false}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={[styles.list, { paddingBottom: listBottomPadding }]}
+          renderSectionHeader={({ section }) => (
+            <View style={styles.groupHeader}>
+              <Text style={styles.groupLabel}>{section.label}</Text>
+              <Text style={styles.groupCount}>{section.count}</Text>
+            </View>
+          )}
+          renderItem={({ item, index, section }) => (
+            <View
+              style={[
+                styles.groupCardSlice,
+                index === 0 && styles.groupCardTop,
+                index === section.data.length - 1 && styles.groupCardBottom,
+              ]}
+            >
+              <ItemCard
+                item={item}
+                onMarkUsed={handleRemove}
+                onDelete={handleRemove}
+                isFirst={index === 0}
+              />
+            </View>
+          )}
+        />
+      )}
+
+      {/* Scrim so rows fade out under the actions rather than colliding with them. */}
+      <LinearGradient
+        colors={['rgba(245,239,228,0)', colours.background]}
+        locations={[0, 0.36]}
+        style={[styles.actionBar, { paddingBottom: insets.bottom + 22 }]}
+        pointerEvents="box-none"
+      >
+        <TouchableOpacity
+          style={styles.scanBtn}
+          onPress={() => navigation.navigate('Capture')}
+          accessibilityLabel="Scan an item"
+          accessibilityRole="button"
+        >
+          <View style={styles.scanGlyph} />
+          <Text style={styles.scanBtnText}>Scan item</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.manualBtn}
+          onPress={() => navigation.navigate('Add')}
+          accessibilityLabel="Add without a photo"
+          accessibilityRole="button"
+        >
+          <Text style={styles.manualBtnText}>Add without a photo</Text>
+        </TouchableOpacity>
+      </LinearGradient>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: colours.background,
+  safe: { flex: 1, backgroundColor: colours.background },
+
+  header: {
+    paddingHorizontal: 22,
+    paddingTop: 10,
+    paddingBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+  },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  mark: {
+    width: 20,
+    height: 20,
+    borderRadius: 7,
+    borderBottomLeftRadius: 2,
+    backgroundColor: colours.sage,
+  },
+  brandName: {
+    fontSize: 20,
+    fontFamily: fonts.bold,
+    letterSpacing: -0.6,
+    color: colours.ink,
+  },
+  headerCount: { fontSize: 13, fontFamily: fonts.regular, color: colours.textSub },
+
+  list: { paddingHorizontal: 14 },
+
+  groupHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingTop: 18,
+    paddingBottom: 6,
+  },
+  groupLabel: {
+    fontSize: 12.5,
+    fontFamily: fonts.semibold,
+    letterSpacing: 0.38,
+    color: colours.label,
+  },
+  groupCount: { fontSize: 12, fontFamily: fonts.regular, color: colours.textMuted },
+
+  /* Each row is a slice of one group card: the border and radius live here so
+     the rows stack into a single rounded container. */
+  groupCardSlice: {
+    backgroundColor: colours.card,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: colours.cardBorder,
+    overflow: 'hidden',
+  },
+  groupCardTop: {
+    borderTopWidth: 1,
+    borderTopLeftRadius: radius.group,
+    borderTopRightRadius: radius.group,
+  },
+  groupCardBottom: {
+    borderBottomWidth: 1,
+    borderBottomLeftRadius: radius.group,
+    borderBottomRightRadius: radius.group,
   },
 
-  // Empty state
   emptyContainer: {
     flex: 1,
-    paddingHorizontal: 32,
-    paddingTop: 80,
-  },
-  appTitle: {
-    fontSize: 42,
-    fontWeight: '700',
-    color: colours.textPrimary,
-    letterSpacing: -1,
-    marginBottom: 6,
-  },
-  appTagline: {
-    fontSize: 20,
-    fontWeight: '400',
-    color: colours.textPrimary,
-    marginBottom: 16,
-  },
-  appSupport: {
-    fontSize: 15,
-    color: colours.textSecondary,
-    lineHeight: 22,
-    marginBottom: 40,
-  },
-  ctaRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  primaryCTA: {
-    backgroundColor: colours.textPrimary,
-    paddingVertical: 14,
+    justifyContent: 'center',
+    gap: 16,
     paddingHorizontal: 28,
-    borderRadius: 10,
-    alignSelf: 'flex-start',
+    paddingBottom: 140,
   },
-  primaryCTAText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  secondaryCTA: {
-    backgroundColor: colours.surface,
+  emptyMark: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    borderBottomLeftRadius: 6,
+    backgroundColor: colours.sageTint,
     borderWidth: 1,
-    borderColor: colours.border,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 10,
-    alignSelf: 'flex-start',
+    borderColor: colours.sageTintBorder,
   },
-  secondaryCTAText: {
-    color: colours.textPrimary,
-    fontSize: 15,
-    fontWeight: '600',
+  emptyTitle: {
+    fontFamily: fonts.serif,
+    fontSize: 34,
+    lineHeight: 38,
+    letterSpacing: -0.34,
+    color: colours.ink,
+  },
+  emptyBody: {
+    fontSize: 15.5,
+    fontFamily: fonts.regular,
+    lineHeight: 24,
+    color: colours.textSecondary,
   },
 
-  // List header
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 12,
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colours.textPrimary,
-    letterSpacing: -0.5,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    gap: 10,
+  actionBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingTop: 28,
+    paddingHorizontal: 22,
+    gap: 6,
   },
   scanBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colours.surface,
-    borderWidth: 1,
-    borderColor: colours.border,
-    justifyContent: 'center',
+    minHeight: hit.primaryButton,
+    borderRadius: radius.button,
+    backgroundColor: colours.sage,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    // The artboard's soft cast under the primary action. Android approximates
+    // it with elevation; iOS gets the offset shadow.
+    elevation: 4,
+    shadowColor: colours.sage,
+    shadowOpacity: 0.4,
+    shadowRadius: 9,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  scanGlyph: {
+    width: 17,
+    height: 15,
+    borderWidth: 2,
+    borderColor: colours.onSage,
+    borderRadius: 4,
   },
   scanBtnText: {
-    fontSize: 16,
+    fontSize: 17,
+    fontFamily: fonts.semibold,
+    letterSpacing: -0.17,
+    color: colours.onSage,
   },
-  addBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colours.textPrimary,
-    justifyContent: 'center',
+  manualBtn: {
+    minHeight: hit.minTarget,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  addBtnText: {
-    color: '#fff',
-    fontSize: 20,
-    lineHeight: 22,
-    marginTop: -1,
-  },
-
-  list: {
-    paddingBottom: 32,
+  manualBtnText: {
+    fontSize: 14.5,
+    fontFamily: fonts.medium,
+    color: colours.secondaryAction,
   },
 });

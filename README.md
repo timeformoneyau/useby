@@ -93,9 +93,11 @@ src/config/proxy.ts           deployed proxy URL + deployment guard, from env
 src/domain/items/             service (the only entry point for mutations),
                               AsyncStorage persistence, derived fields
 src/domain/scan/              parse-expiry client + pure response→prefill mapping
+src/theme/                    design tokens: colour, type, spacing, radii
 src/utils/dateUtils.ts        date parsing/formatting
-src/utils/statusUtils.ts      urgency ladder, sorting, card secondary line
-src/components/               ItemCard, DatePickerModal, colour tokens
+src/utils/statusUtils.ts      urgency ladder and sorting (five bands)
+src/domain/items/presentation.ts  how an item reads: four visible groups, row copy
+src/components/               ItemCard (the row), DatePickerModal
 src/screens/                  MainListScreen, AddItemScreen, CaptureScreen
 scripts/                      offline tests (no network, no key)
 ```
@@ -105,18 +107,46 @@ Screens never touch storage directly — all mutations go through
 
 ## Urgency model
 
-An item is just a name plus a use-by date. The date drives everything:
+An item is a name, a use-by date, and what the packaging called that date. The
+date drives everything.
 
-| Days remaining | Label       |
-|----------------|-------------|
-| more than 3    | Fresh       |
-| 1 to 3         | Use soon    |
-| 0              | Use today   |
-| 1 to 7 past    | Past use by |
-| more than 7 past | Well past |
+**Sorting** uses the five-band ladder in `statusUtils.ts` — Fresh, Use soon, Use
+today, Past use by, Well past — most-urgent-first, ties broken by the date and
+then by name.
 
-The list is sorted most-urgent-first, ties broken by the date itself and then
-by name.
+**Display** groups more coarsely, into the four headings in `presentation.ts`:
+
+| Days remaining   | Group            | Row reads      |
+|------------------|------------------|----------------|
+| more than 3      | Later            | `5 days left`  |
+| 1 to 3           | Use soon         | `2 days left`  |
+| 0                | Today            | `Today`        |
+| any amount past  | Past their date  | `Past by 9 days` |
+
+The two are deliberately different. There is no separate "Well past" heading —
+the row itself carries the exact distance, so nothing is lost by showing one
+past group, and the finer bands stay available for anything that needs them
+later.
+
+## Design
+
+The visual direction is "Warm Home Utility", from the Claude Design v3 artboard.
+Time left is the headline, the item name is the subject, and the calendar date
+is a footnote. Sage carries everything UseBy *does* — scan, save, focus — so the
+accent reads as the brand rather than as a status; terracotta appears only on
+today and overdue items. Tokens live in `src/theme/`, with each colour's
+original `oklch()` value kept in a comment beside its hex so it can be checked
+against the artboard.
+
+Two deliberate departures from the artboard:
+
+- **Rows keep their swipe actions.** The artboard taps a row through to an Item
+  Detail screen carrying Used / Threw it out / Delete. That screen is later
+  work, so removal stays on the swipe, widened to offer Used alongside Delete.
+  Without it there would be no way to take anything off the list.
+- **The date field opens the native picker** rather than parsing free text. The
+  artboard's text input is a prototype convenience; the wheel is less friction
+  on a phone and cannot produce an unparseable value.
 
 ## What was ported from since-fresh
 
@@ -159,10 +189,11 @@ These are a later phase, once the accounts exist:
 
 - **Supabase** — auth screens, cloud storage, the sync engine and queue.
   App runs local-only with no sign-in step.
-- **Persisting `dateType`** — the scan returns `use_by` / `best_before` /
-  `unknown` and the Review & Save editor shows and corrects it, but `UseByItem`
-  does not carry the field and it is not written to storage. The schema for it
-  is Phase 3 work, and the date-aware wording that consumes it is Phase 4. Until
-  then the list describes every item as "Use by", which is not yet truthful for
-  a best-before item.
+- **Item Detail / Edit** — the fourth screen in the accepted architecture. Used
+  and Wasted belong there as explicit actions, but recording which of the two
+  happened needs the Phase 3 data layer, so the screen waits for it. Removal is
+  on the row's swipe until then.
+- **Syncing `dateType`** — it is captured at scan time, correctable in the
+  editor and persisted locally, so the list describes a best-before item
+  honestly. Carrying it to other devices is part of the Phase 3 schema.
 - **Notifications** — no `expo-notifications` dependency and no scheduler.

@@ -1,8 +1,9 @@
-import { UseByItem, ItemStatus, ItemSource } from '../../types';
+import { UseByItem, ItemStatus, ItemSource, DateType } from '../../types';
 
 export interface CreateItemInput {
   name: string;
   expiryDate: string;
+  dateType?: DateType;
   source?: ItemSource;
 }
 

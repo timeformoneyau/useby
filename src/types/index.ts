@@ -1,6 +1,20 @@
 export type ItemSource = 'manual' | 'photo';
 
 /**
+ * How the packaging labelled the date, as classified by the proxy.
+ *
+ * "Use by" is a safety deadline; "best before" is a quality one. `unknown` is a
+ * legitimate value, not an error: a bare `EXP`, `EXPIRY` or an unreadable label
+ * genuinely does not say which kind of date it is, so the proxy preserves the
+ * date and declines to guess the meaning (decision D1 on the Build Plan).
+ *
+ * Persisted locally on `UseByItem` so the list can describe a date truthfully
+ * rather than calling every item "Use by". Syncing it to other devices is
+ * still Phase 3 schema work (decision D2).
+ */
+export type DateType = 'use_by' | 'best_before' | 'unknown';
+
+/**
  * A single tracked item.
  *
  * Ported from since-fresh's `SinceItem`, reduced to expiry tracking only.
@@ -17,6 +31,18 @@ export interface UseByItem {
   name: string;
   /** ISO date string (YYYY-MM-DD). The due date, directly. */
   expiryDate: string;
+  /**
+   * What the packaging called the date, as read at scan time or set by hand.
+   *
+   * Optional because records written before this field existed simply do not
+   * have it; those read back as `undefined` and are presented as `unknown`,
+   * which is the honest reading — we genuinely do not know what their pack
+   * said. No migration is needed for that reason.
+   *
+   * Local persistence only. The Supabase schema that carries this to other
+   * devices is still Phase 3 work (D2).
+   */
+  dateType?: DateType;
   source: ItemSource;
   createdAt: string;
   updatedAt: string;
@@ -42,21 +68,7 @@ export interface ItemStatus {
   dueDate: Date;
 }
 
-/**
- * How the packaging labelled the date, as classified by the proxy.
- *
- * "Use by" is a safety deadline; "best before" is a quality one. `unknown` is a
- * legitimate value, not an error: a bare `EXP`, `EXPIRY` or an unreadable label
- * genuinely does not say which kind of date it is, so the proxy preserves the
- * date and declines to guess the meaning (decision D1 on the Build Plan).
- *
- * NOTE — Phase 3 boundary. This currently lives only in the review/prefill
- * model: the user can see and correct it before saving, but `UseByItem` does
- * not carry it and it is not written to storage. Persisting it properly is
- * Phase 3 schema work (decision D2), and the date-aware wording that consumes
- * it is Phase 4. Deliberately not widened here.
- */
-export type DateType = 'use_by' | 'best_before' | 'unknown';
+
 
 /** Per-field certainty reported by the proxy. Never surfaced to the user as a number. */
 export type Confidence = 'high' | 'medium' | 'low';

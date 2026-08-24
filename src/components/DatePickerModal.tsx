@@ -18,7 +18,7 @@ import {
   Pressable,
 } from 'react-native';
 import { parseDate, formatStorage } from '../utils/dateUtils';
-import { colours } from './colours';
+import { colours, fonts, hit, radius } from '../theme';
 
 interface Props {
   value: string; // YYYY-MM-DD
@@ -113,7 +113,7 @@ export default function DatePickerModal({ value, onConfirm, onCancel }: Props) {
           <TouchableOpacity onPress={onCancel}>
             <Text style={styles.toolbarCancel}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={styles.toolbarTitle}>Use by</Text>
+          <Text style={styles.toolbarTitle}>Date on the pack</Text>
           <TouchableOpacity onPress={handleConfirm}>
             <Text style={styles.toolbarDone}>Done</Text>
           </TouchableOpacity>
@@ -147,12 +147,14 @@ export default function DatePickerModal({ value, onConfirm, onCancel }: Props) {
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.3)',
+    backgroundColor: 'rgba(38,29,23,0.35)',
   },
   sheet: {
-    backgroundColor: colours.surface,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: colours.card,
+    borderTopLeftRadius: radius.panel,
+    borderTopRightRadius: radius.panel,
+    borderTopWidth: 1,
+    borderColor: colours.panelBorder,
     paddingBottom: 32,
   },
   toolbar: {
@@ -162,19 +164,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: colours.border,
+    borderBottomColor: colours.divider,
   },
-  toolbarCancel: { fontSize: 15, color: colours.textSecondary },
-  toolbarTitle: { fontSize: 15, fontWeight: '600', color: colours.textPrimary },
-  toolbarDone: { fontSize: 15, fontWeight: '600', color: colours.textPrimary },
+  toolbarCancel: {
+    fontSize: 15,
+    fontFamily: fonts.regular,
+    color: colours.secondaryAction,
+  },
+  toolbarTitle: { fontSize: 15, fontFamily: fonts.semibold, color: colours.ink },
+  toolbarDone: { fontSize: 15, fontFamily: fonts.semibold, color: colours.sage },
   pickers: {
     flexDirection: 'row',
-    height: ITEM_H * 3 + ITEM_H * 2, // 3 visible rows + 2 padding rows
+    height: ITEM_H * 5,
     paddingHorizontal: 12,
   },
-  wheel: {
-    flex: 1,
-  },
+  wheel: { flex: 1 },
   wheelItem: {
     height: ITEM_H,
     justifyContent: 'center',
@@ -183,14 +187,16 @@ const styles = StyleSheet.create({
   wheelItemSelected: {
     borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderColor: colours.border,
+    borderColor: colours.divider,
+    backgroundColor: colours.background,
   },
   wheelItemText: {
     fontSize: 15,
+    fontFamily: fonts.regular,
     color: colours.textSecondary,
   },
   wheelItemTextSelected: {
-    color: colours.textPrimary,
-    fontWeight: '600',
+    color: colours.ink,
+    fontFamily: fonts.semibold,
   },
 });

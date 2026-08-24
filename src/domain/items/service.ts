@@ -33,6 +33,7 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
     id: generateId(),
     name: input.name,
     expiryDate: input.expiryDate,
+    dateType: input.dateType ?? 'unknown',
     source: input.source ?? 'manual',
     createdAt: now,
     updatedAt: now,

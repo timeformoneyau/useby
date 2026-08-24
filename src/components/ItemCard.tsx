@@ -9,9 +9,9 @@ import {
   PanResponder,
 } from 'react-native';
 import { UseByItem } from '../types';
-import { computeItemStatus, secondaryLine } from '../utils/statusUtils';
-import { formatDisplay } from '../utils/dateUtils';
-import { colours, statusColour } from './colours';
+import { computeItemStatus } from '../utils/statusUtils';
+import { heroText, rowSubtitle } from '../domain/items/presentation';
+import { colours, fonts, hit } from '../theme';
 
 interface Props {
   item: UseByItem;
@@ -19,39 +19,56 @@ interface Props {
   onMarkUsed: (item: UseByItem) => void;
   /** The item was added by mistake. */
   onDelete: (item: UseByItem) => void;
+  /** Hide the divider on the first row of a group card. */
+  isFirst: boolean;
 }
 
-export default function ItemCard({ item, onMarkUsed, onDelete }: Props) {
+const REVEAL_WIDTH = 152; // two 76dp actions
+const SWIPE_THRESHOLD = 60;
+
+/**
+ * One row: time left, then the item, then what the pack said.
+ *
+ * Three columns in a fixed order, with the time-left column on a fixed rail so
+ * it aligns straight down the page. The item name is the subject and takes the
+ * flexible middle; the calendar date is a footnote on the right.
+ *
+ * The artboard has no controls on the row at all — it taps through to an Item
+ * Detail screen that carries Used / Threw it out / Delete. That screen is Phase
+ * 4 work and does not exist yet, so removal stays on the swipe it already had,
+ * widened to offer Used alongside Delete. Without it there would be no way to
+ * take anything off the list. When Detail arrives this can become a plain tap
+ * target and the swipe can go back to being a shortcut rather than the only
+ * route, which is what the accepted design asks for.
+ */
+export default function ItemCard({ item, onMarkUsed, onDelete, isFirst }: Props) {
   const status = computeItemStatus(item);
-  const { label, dueDate } = status;
-  const secondary = secondaryLine(status);
-  const accent = statusColour(label);
+  const { daysUntilDue, dueDate } = status;
+
+  const isHot = daysUntilDue <= 0;
+  const hero = heroText(daysUntilDue);
+  const subtitle = rowSubtitle(item.dateType, dueDate, daysUntilDue);
+
+  const barColour = isHot
+    ? colours.barHot
+    : daysUntilDue <= 3
+      ? colours.barSoon
+      : colours.barLater;
 
   const translateX = useRef(new Animated.Value(0)).current;
-  const SWIPE_THRESHOLD = 80;
-  const REVEAL_WIDTH = 65;
 
   const panResponder = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) =>
         Math.abs(g.dx) > 8 && Math.abs(g.dy) < 20,
       onPanResponderMove: (_, g) => {
-        if (g.dx < 0) {
-          translateX.setValue(Math.max(g.dx, -REVEAL_WIDTH));
-        }
+        if (g.dx < 0) translateX.setValue(Math.max(g.dx, -REVEAL_WIDTH));
       },
       onPanResponderRelease: (_, g) => {
-        if (g.dx < -SWIPE_THRESHOLD) {
-          Animated.spring(translateX, {
-            toValue: -REVEAL_WIDTH,
-            useNativeDriver: true,
-          }).start();
-        } else {
-          Animated.spring(translateX, {
-            toValue: 0,
-            useNativeDriver: true,
-          }).start();
-        }
+        Animated.spring(translateX, {
+          toValue: g.dx < -SWIPE_THRESHOLD ? -REVEAL_WIDTH : 0,
+          useNativeDriver: true,
+        }).start();
       },
     }),
   ).current;
@@ -69,8 +86,15 @@ export default function ItemCard({ item, onMarkUsed, onDelete }: Props) {
 
   return (
     <View style={styles.container}>
-      {/* Swipe actions */}
       <View style={styles.actionsRow}>
+        <TouchableOpacity
+          style={[styles.actionBtn, styles.usedBtn]}
+          onPress={() => onMarkUsed(item)}
+          accessibilityLabel={`Mark ${item.name} used`}
+          accessibilityRole="button"
+        >
+          <Text style={styles.actionText}>Used it</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={[styles.actionBtn, styles.deleteBtn]}
           onPress={handleDelete}
@@ -81,109 +105,91 @@ export default function ItemCard({ item, onMarkUsed, onDelete }: Props) {
         </TouchableOpacity>
       </View>
 
-      {/* Row */}
       <Animated.View
-        style={[styles.row, { transform: [{ translateX }] }]}
+        style={[
+          styles.row,
+          !isFirst && styles.rowDivided,
+          { transform: [{ translateX }] },
+        ]}
         {...panResponder.panHandlers}
+        accessibilityLabel={`${item.name}, ${hero}, ${subtitle}`}
       >
-        {/* Left state indicator */}
-        <View style={[styles.accentBar, { backgroundColor: accent }]} />
+        <View style={[styles.bar, { backgroundColor: barColour }]} />
 
-        <View style={styles.content}>
-          <View style={styles.topRow}>
-            <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
-            <TouchableOpacity
-              style={styles.usedBtn}
-              onPress={() => onMarkUsed(item)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              accessibilityLabel={`Mark ${item.name} used`}
-              accessibilityRole="button"
-            >
-              <Text style={styles.usedBtnText}>Used</Text>
-            </TouchableOpacity>
-          </View>
+        <Text
+          style={[styles.hero, isHot && styles.heroHot]}
+          numberOfLines={2}
+        >
+          {hero}
+        </Text>
 
-          <Text style={styles.dateText}>Use by {formatDisplay(dueDate)}</Text>
+        <Text style={styles.name} numberOfLines={1}>
+          {item.name}
+        </Text>
 
-          <Text style={styles.statusText}>
-            <Text style={{ color: accent }}>{label}</Text>
-            <Text style={styles.dot}>{'  ·  '}</Text>
-            <Text>{secondary}</Text>
-          </Text>
-        </View>
+        <Text style={styles.subtitle} numberOfLines={1}>
+          {subtitle}
+        </Text>
       </Animated.View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    overflow: 'hidden',
-  },
+  container: { overflow: 'hidden' },
   actionsRow: {
     ...StyleSheet.absoluteFillObject,
     flexDirection: 'row',
     justifyContent: 'flex-end',
   },
-  actionBtn: {
-    width: 65,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  deleteBtn: {
-    backgroundColor: colours.destructive,
-  },
+  actionBtn: { width: 76, justifyContent: 'center', alignItems: 'center' },
+  usedBtn: { backgroundColor: colours.sage },
+  deleteBtn: { backgroundColor: colours.destructive },
   actionText: {
-    color: '#fff',
+    color: colours.onSage,
     fontSize: 13,
-    fontWeight: '600',
+    fontFamily: fonts.semibold,
   },
+
   row: {
     flexDirection: 'row',
-    backgroundColor: colours.background,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colours.border,
+    alignItems: 'center',
+    gap: 10,
+    minHeight: hit.row,
+    paddingRight: 12,
+    backgroundColor: colours.card,
   },
-  accentBar: {
-    width: 3,
+  rowDivided: {
+    borderTopWidth: 1,
+    borderTopColor: colours.divider,
   },
-  content: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+  bar: { width: 3, alignSelf: 'stretch' },
+
+  /* Fixed rail so time-left aligns down the page. Two lines are allowed:
+     "Past by 12 days" does not fit on one at this size, and the artboard's
+     1.15 line-height says wrapping was expected rather than accidental. */
+  hero: {
+    width: 96,
+    fontSize: 14.5,
+    fontFamily: fonts.semibold,
+    letterSpacing: -0.15,
+    lineHeight: 17,
+    color: colours.ink,
   },
-  topRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 3,
-  },
+  heroHot: { color: colours.terracotta },
+
   name: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: colours.textPrimary,
     flex: 1,
-    marginRight: 8,
+    minWidth: 0,
+    fontSize: 16,
+    fontFamily: fonts.medium,
+    letterSpacing: -0.24,
+    color: colours.ink,
   },
-  usedBtn: {
-    paddingTop: 1,
-  },
-  usedBtnText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: colours.textMuted,
-    letterSpacing: 0.1,
-  },
-  dateText: {
-    fontSize: 13,
-    color: colours.textSecondary,
-    marginBottom: 5,
-  },
-  statusText: {
-    fontSize: 12,
-    color: colours.textMuted,
-  },
-  dot: {
-    color: colours.border,
+
+  subtitle: {
+    fontSize: 12.5,
+    fontFamily: fonts.regular,
+    color: colours.textSub,
   },
 });

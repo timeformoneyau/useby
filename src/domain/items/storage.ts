@@ -6,9 +6,15 @@ const STORAGE_KEY = '@useby_v1_items';
 /**
  * Envelope carries a version number so a future schema change can migrate
  * in place. since-fresh needed a migration module because it had shipped two
- * schema versions; UseBy starts at 1 with nothing to migrate from.
+ * schema versions.
+ *
+ * Version 2 added the optional `dateType`. No migration step exists because
+ * none is needed: a v1 record simply lacks the field and reads back as
+ * `undefined`, which the UI presents as an unknown date type — accurate, since
+ * those items were saved before we recorded what the pack said. The version is
+ * bumped to record that the shape moved, not because anything rewrites it.
  */
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 2;
 
 interface Envelope {
   version: number;

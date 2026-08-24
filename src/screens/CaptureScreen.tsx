@@ -5,37 +5,42 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
-import { colours } from '../components/colours';
 import { scanPhoto } from '../domain/scan/client';
 import { emptyPrefill } from '../domain/scan/mapping';
+import { colours, fonts, hit, radius } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
 
 /**
- * Camera capture.
+ * Camera.
  *
  * Ported from since-fresh's ScanFoodScreen. The capture, permission and resize
- * pipeline came across intact; the parse step that was stubbed out at scaffold
- * time is now wired to UseBy's own deployed proxy, which calls the Anthropic
- * API and returns the item name, date and date type with a per-field
- * confidence.
+ * pipeline came across intact; the parse step is wired to UseBy's own deployed
+ * proxy, which calls the Anthropic API and returns the item name, date and date
+ * type with a per-field confidence.
  *
  * The screen never blocks on that call succeeding. Whatever comes back — a
  * clean read, a partial one, or nothing at all — the user lands in the same
  * Review & Save editor, prefilled as far as the read allowed. A failed scan is
  * a prefill with a note on it, not a dead end.
+ *
+ * Kept sparse deliberately: no scanner theatre, no bounding boxes, no
+ * confidence readouts. The artboard also shows a "Flash auto" control, which is
+ * a static label there with nothing behind it; it is left out rather than
+ * shipped as a button that does nothing.
  */
 export default function CaptureScreen() {
   const navigation = useNavigation<Nav>();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
+
   /**
    * 'capturing' covers the shutter and the resize; 'reading' covers the wait on
    * the proxy. They are separate because the second one is the slow half and
@@ -55,9 +60,9 @@ export default function CaptureScreen() {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
       if (!photo) throw new Error('No photo captured.');
 
-      // Resize/compress client-side. Kept from since-fresh, and now load-bearing:
-      // the proxy rejects anything over ~4.4MB decoded, and a smaller upload is
-      // a faster scan on a phone in a kitchen.
+      // Resize/compress client-side. Kept from since-fresh, and now
+      // load-bearing: the proxy rejects anything over ~4.4MB decoded, and a
+      // smaller upload is a faster scan on a phone in a kitchen.
       const manipulated = await ImageManipulator.manipulateAsync(
         photo.uri,
         [{ resize: { width: 1200 } }],
@@ -67,8 +72,6 @@ export default function CaptureScreen() {
       if (!manipulated.base64) throw new Error('Could not process the photo.');
       imageBase64 = manipulated.base64;
     } catch {
-      // The camera or the resize failed, so there is nothing to send. Stay put
-      // and let them try another shot.
       setError("Couldn't use that photo — try again, or type it in.");
       setPhase('idle');
       return;
@@ -77,58 +80,74 @@ export default function CaptureScreen() {
     setPhase('reading');
     const result = await scanPhoto(imageBase64);
 
-    // Both branches land in the same editor. A failed read simply arrives with
-    // nothing filled in and a note saying why.
     navigation.replace('Add', {
-      prefill: result.ok
-        ? result.prefill
-        : emptyPrefill('photo', result.message),
+      prefill: result.ok ? result.prefill : emptyPrefill('photo', result.message),
     });
   }
 
   if (!permission) {
     return (
-      <SafeAreaView style={styles.safe}>
-        <ActivityIndicator color={colours.textPrimary} />
+      <SafeAreaView style={styles.gate}>
+        <ActivityIndicator color={colours.sage} />
       </SafeAreaView>
     );
   }
 
   if (!permission.granted) {
     return (
-      <SafeAreaView style={styles.safe}>
-        <View style={styles.permissionContainer}>
+      <SafeAreaView style={styles.gate}>
+        <View style={styles.permissionBody}>
           <Text style={styles.permissionTitle}>Camera access needed</Text>
-          <Text style={styles.permissionBody}>
-            UseBy uses the camera to capture the use-by date on food packaging.
+          <Text style={styles.permissionText}>
+            UseBy uses the camera to read the use-by date on food packaging.
           </Text>
           <TouchableOpacity style={styles.primaryBtn} onPress={requestPermission}>
             <Text style={styles.primaryBtnText}>Allow camera</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryBtn} onPress={() => navigation.goBack()}>
-            <Text style={styles.secondaryBtnText}>Cancel</Text>
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.secondaryBtnText}>Not now</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
   }
 
-  return (
-    <View style={styles.cameraContainer}>
-      <CameraView ref={cameraRef} style={styles.camera} facing="back" />
+  // The wait on the model gets the whole screen: there is nothing to frame any
+  // more, and a live preview underneath would invite another shot mid-request.
+  if (phase === 'reading') {
+    return (
+      <SafeAreaView style={styles.reading}>
+        <View style={styles.readingMark} />
+        <Text style={styles.readingText}>Reading the label…</Text>
+      </SafeAreaView>
+    );
+  }
 
-      <View style={styles.overlay}>
-        <Text style={styles.hint}>
-          Frame the use-by date and the item name, then capture
-        </Text>
+  return (
+    <SafeAreaView style={styles.shell}>
+      <View style={styles.topRow}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          disabled={busy}
+          style={styles.cancelBtn}
+        >
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
       </View>
 
-      {phase === 'reading' && (
-        <View style={styles.readingBanner}>
-          <ActivityIndicator color="#fff" />
-          <Text style={styles.readingText}>Reading the label…</Text>
-        </View>
-      )}
+      <View style={styles.preview}>
+        <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+        {/* Four corner brackets — the only framing affordance. */}
+        <View style={[styles.bracket, styles.bracketTL]} />
+        <View style={[styles.bracket, styles.bracketTR]} />
+        <View style={[styles.bracket, styles.bracketBL]} />
+        <View style={[styles.bracket, styles.bracketBR]} />
+      </View>
+
+      <Text style={styles.hint}>Include the product name and the printed date</Text>
 
       {error && (
         <View style={styles.errorBanner}>
@@ -137,112 +156,198 @@ export default function CaptureScreen() {
       )}
 
       <View style={styles.controls}>
-        <TouchableOpacity style={styles.cancelBtn} onPress={() => navigation.goBack()} disabled={busy}>
-          <Text style={styles.cancelBtnText}>Cancel</Text>
+        <TouchableOpacity
+          style={styles.typeItIn}
+          onPress={() => navigation.replace('Add', { prefill: emptyPrefill('manual') })}
+          disabled={busy}
+        >
+          <Text style={styles.typeItInText}>Type it in</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.captureBtn, busy && styles.captureBtnDisabled]}
+          style={[styles.shutter, busy && styles.shutterDisabled]}
           onPress={handleCapture}
           disabled={busy}
           accessibilityLabel="Capture"
           accessibilityRole="button"
         >
-          {busy ? <ActivityIndicator color="#fff" /> : <View style={styles.captureBtnInner} />}
+          {phase === 'capturing' && <ActivityIndicator color={colours.sage} />}
         </TouchableOpacity>
 
         <View style={styles.controlsSpacer} />
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colours.background, justifyContent: 'center' },
-  permissionContainer: { flex: 1, padding: 32, justifyContent: 'center' },
-  permissionTitle: { fontSize: 20, fontWeight: '700', color: colours.textPrimary, marginBottom: 10 },
-  permissionBody: { fontSize: 15, color: colours.textSecondary, lineHeight: 22, marginBottom: 28 },
-  primaryBtn: {
-    backgroundColor: colours.textPrimary,
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  primaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  secondaryBtn: { paddingVertical: 12, alignItems: 'center' },
-  secondaryBtnText: { color: colours.textSecondary, fontSize: 15 },
+const BRACKET = 26;
 
-  cameraContainer: { flex: 1, backgroundColor: '#000' },
-  camera: { flex: 1 },
-  overlay: {
-    position: 'absolute',
-    top: 60,
-    left: 0,
-    right: 0,
+const styles = StyleSheet.create({
+  shell: { flex: 1, backgroundColor: colours.cameraBg },
+  gate: {
+    flex: 1,
+    backgroundColor: colours.background,
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 32,
   },
-  hint: {
-    color: '#fff',
-    fontSize: 14,
-    textAlign: 'center',
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
+
+  permissionBody: { paddingHorizontal: 28, gap: 12, width: '100%' },
+  permissionTitle: {
+    fontFamily: fonts.serif,
+    fontSize: 30,
+    lineHeight: 34,
+    color: colours.ink,
   },
-  readingBanner: {
-    position: 'absolute',
-    bottom: 130,
-    left: 20,
-    right: 20,
-    flexDirection: 'row',
+  permissionText: {
+    fontSize: 15.5,
+    fontFamily: fonts.regular,
+    lineHeight: 24,
+    color: colours.textSecondary,
+    marginBottom: 16,
+  },
+  primaryBtn: {
+    minHeight: hit.primaryButton,
+    borderRadius: radius.button,
+    backgroundColor: colours.sage,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    borderRadius: 8,
-    padding: 12,
   },
-  readingText: { color: '#fff', fontSize: 14 },
+  primaryBtnText: {
+    fontSize: 17,
+    fontFamily: fonts.semibold,
+    color: colours.onSage,
+  },
+  secondaryBtn: {
+    minHeight: hit.minTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryBtnText: {
+    fontSize: 14.5,
+    fontFamily: fonts.medium,
+    color: colours.secondaryAction,
+  },
+
+  topRow: { paddingHorizontal: 14, paddingVertical: 8 },
+  cancelBtn: { paddingVertical: 12, paddingHorizontal: 10, alignSelf: 'flex-start' },
+  cancelText: {
+    fontSize: 15,
+    fontFamily: fonts.regular,
+    color: colours.cameraText,
+  },
+
+  preview: {
+    flex: 1,
+    marginHorizontal: 14,
+    marginTop: 4,
+    borderRadius: 20,
+    overflow: 'hidden',
+    backgroundColor: colours.cameraPanel,
+  },
+  bracket: {
+    position: 'absolute',
+    width: BRACKET,
+    height: BRACKET,
+    borderColor: colours.cameraBracket,
+  },
+  bracketTL: {
+    left: 22,
+    top: 22,
+    borderLeftWidth: 2,
+    borderTopWidth: 2,
+    borderTopLeftRadius: 8,
+  },
+  bracketTR: {
+    right: 22,
+    top: 22,
+    borderRightWidth: 2,
+    borderTopWidth: 2,
+    borderTopRightRadius: 8,
+  },
+  bracketBL: {
+    left: 22,
+    bottom: 22,
+    borderLeftWidth: 2,
+    borderBottomWidth: 2,
+    borderBottomLeftRadius: 8,
+  },
+  bracketBR: {
+    right: 22,
+    bottom: 22,
+    borderRightWidth: 2,
+    borderBottomWidth: 2,
+    borderBottomRightRadius: 8,
+  },
+
+  hint: {
+    paddingHorizontal: 30,
+    paddingTop: 20,
+    paddingBottom: 6,
+    textAlign: 'center',
+    fontSize: 15.5,
+    fontFamily: fonts.regular,
+    lineHeight: 22,
+    color: colours.cameraText,
+  },
+
   errorBanner: {
-    position: 'absolute',
-    bottom: 130,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(192,57,43,0.92)',
-    borderRadius: 8,
+    marginHorizontal: 20,
+    marginTop: 8,
+    borderRadius: radius.chip,
+    backgroundColor: colours.destructive,
     padding: 12,
   },
-  errorText: { color: '#fff', fontSize: 13, textAlign: 'center' },
+  errorText: {
+    color: colours.onSage,
+    fontSize: 13,
+    fontFamily: fonts.regular,
+    textAlign: 'center',
+  },
+
   controls: {
-    position: 'absolute',
-    bottom: 36,
-    left: 0,
-    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 28,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: 28,
   },
-  cancelBtn: { width: 64 },
-  cancelBtnText: { color: '#fff', fontSize: 15 },
-  controlsSpacer: { width: 64 },
-  captureBtn: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    borderWidth: 4,
-    borderColor: '#fff',
+  typeItIn: { width: 104, paddingVertical: 12 },
+  typeItInText: {
+    fontSize: 14.5,
+    fontFamily: fonts.regular,
+    color: colours.cameraDim,
+  },
+  controlsSpacer: { width: 104 },
+  shutter: {
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    backgroundColor: colours.onSage,
+    borderWidth: 5,
+    borderColor: colours.sage,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  captureBtnDisabled: { opacity: 0.6 },
-  captureBtnInner: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#fff',
+  shutterDisabled: { opacity: 0.6 },
+
+  reading: {
+    flex: 1,
+    backgroundColor: colours.cameraBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  readingMark: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    borderBottomLeftRadius: 4,
+    backgroundColor: colours.sage,
+  },
+  readingText: {
+    fontSize: 14.5,
+    fontFamily: fonts.regular,
+    color: colours.cameraText,
   },
 });
