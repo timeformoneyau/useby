@@ -179,6 +179,60 @@ export function toPrefill(
 }
 
 /**
+ * Which of the two fields the model actually came back with.
+ *
+ * A `200` is not the same as a useful read — the proxy can answer successfully
+ * with null for everything. This turns "how did the read go" into one greppable
+ * word, and the four cases call for different responses: `both` is the product
+ * working, `neither` is the photo or the model, and the one-sided cases usually
+ * mean the name and the date were not both legible in the same shot.
+ *
+ * Deliberately the same four words the proxy logs, so a scan reads the same on
+ * the phone and on the server.
+ */
+export type ReadQuality = 'both' | 'name-only' | 'date-only' | 'neither';
+
+export function describeRead(fields: ExtractedFields): ReadQuality {
+  const name = fields.itemName.value !== null;
+  const date = fields.expiryDate.value !== null;
+  if (name && date) return 'both';
+  if (name) return 'name-only';
+  if (date) return 'date-only';
+  return 'neither';
+}
+
+/**
+ * Values the proxy sent that this build then refused.
+ *
+ * `readFields` re-validates everything the server already normalised — a second
+ * line, because the app and the proxy deploy independently. That guard is
+ * right, and it is also silent: a date this build discarded and a date the
+ * model never read both arrive at the editor as nothing, which are completely
+ * different problems. One is our own mapping throwing away usable output.
+ *
+ * This should always return an empty list. If it ever does not, the two
+ * deployments disagree about the contract, and that is worth knowing
+ * immediately rather than reading as a bad photo. Names the field only — never
+ * the value, which would put the item name in the log.
+ */
+export function mappingDrops(body: unknown, fields: ExtractedFields | null): string[] {
+  if (fields === null || typeof body !== 'object' || body === null) return [];
+
+  const sent = (body as { fields?: Record<string, { value?: unknown }> }).fields;
+  if (!sent) return [];
+
+  const supplied = (key: string): boolean => {
+    const value = sent[key]?.value;
+    return typeof value === 'string' && value.trim().length > 0;
+  };
+
+  const drops: string[] = [];
+  if (supplied('itemName') && fields.itemName.value === null) drops.push('name');
+  if (supplied('expiryDate') && fields.expiryDate.value === null) drops.push('date');
+  return drops;
+}
+
+/**
  * How the Review & Save screen introduces itself, given what the scan returned.
  *
  * Lives here rather than in the screen so the offline suite can hold it to the

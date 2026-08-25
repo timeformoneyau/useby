@@ -14,6 +14,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { scanPhoto } from '../domain/scan/client';
 import { emptyPrefill } from '../domain/scan/mapping';
+import { newScanId, scanTrace } from '../domain/scan/diagnostics';
 import { colours, fonts, hit, radius } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
@@ -55,10 +56,17 @@ export default function CaptureScreen() {
     setError(null);
     setPhase('capturing');
 
+    // The scan is named here, at the shutter, not at the request. A capture that
+    // dies before anything is sent still has an id and still writes a line, so
+    // "nothing happened at all" is a diagnosis rather than a gap.
+    const scanId = newScanId();
+
     let imageBase64: string;
+    let stage: 'camera' | 'resize' | 'encode' = 'camera';
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
       if (!photo) throw new Error('No photo captured.');
+      stage = 'resize';
 
       // Resize/compress client-side. Kept from since-fresh, and now
       // load-bearing: the proxy rejects anything it cannot fit inside Vercel's
@@ -70,6 +78,7 @@ export default function CaptureScreen() {
         { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true },
       );
 
+      stage = 'encode';
       if (!manipulated.base64) throw new Error('Could not process the photo.');
       imageBase64 = manipulated.base64;
 
@@ -79,26 +88,29 @@ export default function CaptureScreen() {
       // 1200x900 where the proxy would have accepted 1568 on the long edge.
       // If real packaging reads badly, this line says whether resolution is a
       // plausible cause before anything gets changed on a hunch.
-      console.log(
-        `useby.capture ${JSON.stringify({
-          shot: { w: photo.width, h: photo.height },
-          sent: { w: manipulated.width, h: manipulated.height },
-          kb: Math.round(imageBase64.length / 1024),
-        })}`,
-      );
+      scanTrace(scanId, 'capture', {
+        outcome: 'ok',
+        shot: { w: photo.width, h: photo.height },
+        sent: { w: manipulated.width, h: manipulated.height },
+        kb: Math.round(imageBase64.length / 1024),
+      });
     } catch (e) {
       // Pre-request, so there is no secret anywhere near this: the message is
       // the only thing that says whether the camera, the file or the resize
       // gave up, and swallowing it left "couldn't use that photo" with nothing
-      // behind it.
-      console.warn('useby.capture failed:', e instanceof Error ? e.message : e);
+      // behind it. `at` narrows it further without needing the message parsed.
+      scanTrace(scanId, 'capture', {
+        outcome: 'capture-failed',
+        at: stage,
+        err: e instanceof Error ? e.message.slice(0, 200) : typeof e,
+      });
       setError("Couldn't use that photo — try again, or type it in.");
       setPhase('idle');
       return;
     }
 
     setPhase('reading');
-    const result = await scanPhoto(imageBase64);
+    const result = await scanPhoto(imageBase64, scanId);
 
     navigation.replace('Add', {
       prefill: result.ok ? result.prefill : emptyPrefill('photo', result.message),

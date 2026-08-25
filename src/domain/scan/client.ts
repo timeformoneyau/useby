@@ -12,7 +12,10 @@
  * no date.
  */
 import { isScanConfigured, parseExpiryUrl, proxySecret } from '../../config/proxy';
+import { SCAN_ID_HEADER, scanTrace } from './diagnostics';
 import {
+  describeRead,
+  mappingDrops,
   readFields,
   reasonForStatus,
   scanFailure,
@@ -33,27 +36,6 @@ import {
 const TIMEOUT_MS = 30_000;
 
 /**
- * One line per scan, to `adb logcat`.
- *
- * The app deliberately shows the user nothing about *why* a scan failed beyond
- * one sentence of plain copy — that is the accepted design, and a status code
- * in the UI would help nobody standing at a kitchen bench. But during Phase 3A
- * the person holding the phone is also the person diagnosing it, and "it said
- * it couldn't read it" is not enough to act on. This closes that gap without
- * touching the interface: `adb logcat -s ReactNativeJS | grep useby.scan` gives
- * the outcome, the HTTP status, the server's own failure code and where the
- * time went.
- *
- * Nothing secret goes in it. Not the bearer token, not the image, not the
- * error object — which in some runtimes stringifies the request that produced
- * it, headers included. Only the fields named below, all of them either numbers
- * or values from a closed set.
- */
-function trace(entry: Record<string, unknown>) {
-  console.log(`useby.scan ${JSON.stringify(entry)}`);
-}
-
-/**
  * The server's failure code, if it sent one we recognise.
  *
  * Read for the log only — never rendered, and never used to choose the copy;
@@ -70,12 +52,33 @@ async function failureCode(response: Response): Promise<string | undefined> {
   }
 }
 
-export async function scanPhoto(imageBase64: string): Promise<ScanResult> {
+/**
+ * Did the proxy see the same scan id the phone sent?
+ *
+ * It echoes it back on every response. A mismatch means something between the
+ * two rewrote or dropped the header — which would silently break the ability to
+ * match the two log lines, so it is worth catching rather than discovering
+ * later while trying to diagnose something else.
+ */
+function echoedId(response: Response): string | null {
+  try {
+    return response.headers.get(SCAN_ID_HEADER);
+  } catch {
+    return null;
+  }
+}
+
+export async function scanPhoto(
+  imageBase64: string,
+  scanId: string,
+): Promise<ScanResult> {
   const startedAt = Date.now();
   const kb = Math.round(imageBase64.length / 1024);
+  const trace = (entry: Record<string, unknown>) =>
+    scanTrace(scanId, 'request', { ms: Date.now() - startedAt, kb, ...entry });
 
   if (!isScanConfigured() || proxySecret === null) {
-    trace({ outcome: 'not-configured', kb });
+    trace({ outcome: 'not-configured' });
     return scanFailure('not-configured');
   }
 
@@ -91,6 +94,9 @@ export async function scanPhoto(imageBase64: string): Promise<ScanResult> {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${proxySecret}`,
+        // The proxy adopts this as its own log id, so one scan is one
+        // identifiable thing on both sides of the wire.
+        [SCAN_ID_HEADER]: scanId,
       },
       body: JSON.stringify({ imageBase64 }),
       signal: controller.signal,
@@ -100,13 +106,18 @@ export async function scanPhoto(imageBase64: string): Promise<ScanResult> {
     // secret in a header and error objects in some runtimes quote the request
     // back, so the object itself never reaches the log. `name` distinguishes
     // an abort from a transport failure, which is all this branch decides.
+    //
+    // Either way the request never reached the proxy, so there will be no
+    // server-side line for this scan id at all — the absence is the evidence.
     const reason =
       e instanceof Error && e.name === 'AbortError' ? 'timeout' : 'network';
-    trace({ outcome: reason, kb, ms: Date.now() - startedAt, err: (e as Error)?.name });
+    trace({ outcome: reason, err: (e as Error)?.name, reachedProxy: false });
     return scanFailure(reason);
   } finally {
     clearTimeout(timer);
   }
+
+  const echo = echoedId(response);
 
   if (!response.ok) {
     const reason = reasonForStatus(response.status);
@@ -114,8 +125,7 @@ export async function scanPhoto(imageBase64: string): Promise<ScanResult> {
       outcome: reason,
       status: response.status,
       code: await failureCode(response),
-      kb,
-      ms: Date.now() - startedAt,
+      idEchoed: echo === scanId,
     });
     return scanFailure(reason);
   }
@@ -124,31 +134,31 @@ export async function scanPhoto(imageBase64: string): Promise<ScanResult> {
   try {
     body = await response.json();
   } catch {
-    trace({ outcome: 'malformed', status: response.status, at: 'json', kb, ms: Date.now() - startedAt });
+    trace({ outcome: 'malformed', status: response.status, at: 'json' });
     return scanFailure('malformed');
   }
 
   const fields = readFields(body);
   if (fields === null) {
-    trace({ outcome: 'malformed', status: response.status, at: 'contract', kb, ms: Date.now() - startedAt });
+    trace({ outcome: 'malformed', status: response.status, at: 'contract' });
     return scanFailure('malformed');
   }
 
   const prefill = toPrefill(fields);
 
   // A 200 is not the same as a useful read: the model can return nulls for
-  // everything and still succeed. Recording which fields actually came back is
-  // what separates "the pipeline works and the photo was hard" from "the
-  // pipeline is broken" — the two things a Phase 3A test has to tell apart.
+  // everything and still succeed. `read` separates "the pipeline works and the
+  // photo was hard" from "the pipeline is broken", and `dropped` catches the
+  // third case — our own mapping refusing something the server did send, which
+  // should never happen and would otherwise look identical to a bad photo.
   trace({
     outcome: 'ok',
     status: response.status,
-    kb,
-    ms: Date.now() - startedAt,
-    name: prefill.name.length > 0,
-    date: prefill.expiryDate !== null,
+    read: describeRead(fields),
+    dropped: mappingDrops(body, fields),
     type: prefill.dateType,
     checks: { name: prefill.needsNameCheck, date: prefill.needsDateCheck },
+    idEchoed: echo === scanId,
   });
 
   return { ok: true, prefill };

@@ -71,32 +71,53 @@ device testing, though, the person holding the phone is also the person
 diagnosing it, so each scan writes one line to the Android log instead:
 
 ```bash
-adb logcat -s ReactNativeJS | grep useby
+adb logcat -s ReactNativeJS | grep useby.scan
 ```
 
+Every scan is named at the shutter and writes two lines — one for the capture,
+one for the round trip — both carrying the same `scanId`:
+
 ```
-useby.capture {"shot":{"w":3000,"h":4000},"sent":{"w":1200,"h":1600},"kb":287}
-useby.scan {"outcome":"ok","status":200,"kb":287,"ms":3120,"name":true,"date":true,
-            "type":"use_by","checks":{"name":false,"date":true}}
+useby.scan {"scanId":"p-mfk2j8x1-4b7c9","stage":"capture","outcome":"ok",
+            "shot":{"w":3000,"h":4000},"sent":{"w":1200,"h":1600},"kb":287}
+useby.scan {"scanId":"p-mfk2j8x1-4b7c9","stage":"request","ms":3120,"kb":287,
+            "outcome":"ok","status":200,"read":"name-only","dropped":[],
+            "type":"unknown","checks":{"name":false,"date":true},"idEchoed":true}
 ```
 
-`useby.capture` is what the camera produced and what was actually uploaded —
-the resize constrains the *width*, so a landscape shot is sent smaller than a
-portrait one. `useby.scan` is the round trip: `outcome` is the failure reason or
-`ok`, `code` carries the proxy's own category on a failure, and `name`/`date`
-say whether the model actually returned each field. **A `200` is not the same
-as a useful read** — the model can return nulls for both and still succeed, so
-`"outcome":"ok","name":false,"date":false` is the line that means "the pipeline
-works and the photo defeated it".
+**`scanId` is the whole point.** The app sends it to the proxy in an
+`X-UseBy-Scan-Id` header, the proxy adopts it as its own log id and echoes it
+back, so one scan is one identifiable thing on both sides of the wire. Matching
+a phone log line to a server log line never depends on comparing timestamps.
+The id begins with a base-36 timestamp, so ids sort by time — which is what
+turns "it failed about an hour ago" into a bounded search.
+
+| Field | What it tells you |
+|---|---|
+| `stage` | `capture` (camera → resized JPEG) or `request` (the round trip) |
+| `outcome` | `ok`, or why it stopped: `capture-failed`, `network`, `timeout`, `server`, `unreadable`, `malformed`, `unauthorized`, `too-large`, `rejected`, `not-configured` |
+| `read` | On a `200`: `both`, `name-only`, `date-only`, `neither` |
+| `dropped` | Fields the server sent that this build then refused. Should always be empty; anything here means the two deployments disagree |
+| `at` | On `capture-failed`: `camera`, `resize` or `encode`. On `malformed`: `json` or `contract` |
+| `code` | The proxy's own failure category, on a failure |
+| `reachedProxy` | Present and `false` when the request never left the phone's network — expect **no** server line for that `scanId` |
+| `idEchoed` | Whether the proxy echoed the same id back |
+| `shot` / `sent` | What the camera produced, and what was actually uploaded |
+
+**A `200` is not the same as a useful read.** The model can return nulls for
+both fields and still succeed, so `"outcome":"ok","read":"neither"` is the line
+that means "the pipeline works and the photo defeated it" — a completely
+different problem from any failure.
 
 Nothing secret goes into these lines: not the bearer token, not the image, not
 the error object — which in some runtimes stringifies the request that produced
-it, headers included. Only the fields shown above.
+it, headers included — and not the item name the model read, which is the
+contents of someone's fridge.
 
 The matching server-side line is in the proxy's Vercel log, one JSON entry per
-request under `"evt":"parse-expiry"`, carrying the image dimensions the model
-actually saw and where the time went. Between the two, a failed scan can be
-placed at capture, transport, upstream, parsing or the model itself.
+request under `"evt":"parse-expiry"`, carrying the same `scanId` as `id`. Between
+the two, a failed scan can be placed at capture, transport, upstream, parsing,
+validation or the model itself.
 
 ## Remaining setup: link the EAS project
 
