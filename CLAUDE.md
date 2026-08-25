@@ -24,3 +24,23 @@ preserve the existing entries — prepend, never overwrite.
 
 Expo SDK 54, Android-first. See README.md for the port history from
 `timeformoneyau/since-fresh`, what was stripped, and what's deferred.
+
+## Commit author identity — set this before committing
+
+```bash
+git config --local user.name  "timeformoneyau"
+git config --local user.email "180406668+timeformoneyau@users.noreply.github.com"
+```
+
+That is the GitHub account that owns this repository. The sandbox default is
+`Claude <noreply@anthropic.com>`, which maps to no GitHub account at all, and
+local git config does not survive a fresh clone — so set it explicitly at the
+start of any session that will commit.
+
+This matters most in the sibling repo `timeformoneyau/usebyproxy`, where a
+wrong author causes **Vercel to block the production deployment outright**: it
+is private, the Vercel project is on the Hobby plan, and Hobby will not deploy
+a commit authored by anyone but the project owner. Commit `dadfd11` there was
+blocked for exactly this reason. Nothing in this repo deploys automatically, so
+the consequence here is only misattributed history — but keep the two repos
+consistent.
