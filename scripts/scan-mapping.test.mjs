@@ -17,6 +17,7 @@ import {
   normaliseDateType,
   readFields,
   reasonForStatus,
+  reviewCopy,
   toPrefill,
 } from '../src/domain/scan/mapping.ts';
 
@@ -175,4 +176,95 @@ test('manual entry starts clean, with no scan artefacts', () => {
   assert.equal(prefill.source, 'manual');
   assert.equal(prefill.notice, undefined);
   assert.equal(prefill.dateType, 'unknown');
+});
+
+/**
+ * The five outcomes a Phase 3A test has to be able to tell apart.
+ *
+ * Everything above covers them one field at a time. These cover them as whole
+ * arrivals at the editor, because that is where they are indistinguishable to
+ * the person holding the phone — and where one of them was, until now, being
+ * described as something it was not.
+ */
+
+test('a useful read arrives with both fields and nothing flagged', () => {
+  const prefill = toPrefill(readFields(body()));
+  assert.deepEqual(reviewCopy('photo', false, true, true), {
+    title: "Here's what we found",
+    note: 'Have a quick look, then save.',
+  });
+  assert.equal(prefill.name, 'Milk');
+  assert.equal(prefill.expiryDate, '2026-08-27');
+  assert.equal(prefill.needsNameCheck, false);
+  assert.equal(prefill.needsDateCheck, false);
+});
+
+test('a partial read says which half it got, and gets it the right way round', () => {
+  const noDate = toPrefill(readFields(body({ expiryDate: field(null, 'low') })));
+  assert.match(
+    reviewCopy('photo', false, Boolean(noDate.name), noDate.expiryDate !== null).note,
+    /item but not the date/,
+  );
+
+  const noName = toPrefill(readFields(body({ itemName: field(null, 'low') })));
+  assert.match(
+    reviewCopy('photo', false, Boolean(noName.name), noName.expiryDate !== null).note,
+    /date but not the item/,
+  );
+});
+
+test('a 200 that read nothing is not described as a partial success', () => {
+  // Regression guard. The model returning nulls for everything is a well-formed
+  // success, and it used to fall through to "We got the date but not the item"
+  // on a screen showing no date — the model claiming a read it never made,
+  // which is the one thing this whole pipeline is built to avoid.
+  const prefill = toPrefill(
+    readFields(body({ itemName: field(null, 'low'), expiryDate: field(null, 'low') })),
+  );
+  assert.equal(prefill.name, '');
+  assert.equal(prefill.expiryDate, null);
+
+  const copy = reviewCopy('photo', false, Boolean(prefill.name), prefill.expiryDate !== null);
+  assert.equal(copy.title, "We couldn't read that one");
+  assert.doesNotMatch(copy.note, /we got/i);
+});
+
+test('an outright failure and an empty read read the same to the user', () => {
+  // They are the same situation: nothing was extracted. The difference is
+  // whether the request completed, which belongs in the log, not on the screen.
+  const failed = reviewCopy('photo', true, false, false);
+  const empty = reviewCopy('photo', false, false, false);
+  assert.deepEqual(failed, empty);
+});
+
+test('malformed output never reaches the editor as a partial read', () => {
+  // Each of these is a shape the proxy should never send. None may resolve to
+  // a prefill: a half-parsed contract is how a hallucinated value gets in.
+  const malformed = [
+    { ok: true, fields: { itemName: field('Milk'), expiryDate: field('2026-08-27') } },
+    { ok: true, fields: { itemName: field('Milk'), dateType: field('use_by') } },
+    { ok: 'yes', fields: body().fields },
+    { fields: body().fields },
+  ];
+  for (const candidate of malformed) {
+    assert.equal(readFields(candidate), null, JSON.stringify(candidate));
+  }
+});
+
+test('an upstream failure does not tell the user to retake the photo', () => {
+  // The proxy answers 503 when Anthropic is unreachable or throttling and 500
+  // when its own configuration is wrong. Neither is the photo's fault, and
+  // neither may inherit the "try a clearer photo" copy that 502 carries.
+  for (const status of [500, 503]) {
+    const reason = reasonForStatus(status);
+    assert.equal(reason, 'server');
+    assert.doesNotMatch(failureMessage(reason), /photo/i);
+  }
+  assert.match(failureMessage(reasonForStatus(502)), /clearer photo/i);
+});
+
+test('manual entry is never given scan-review copy', () => {
+  assert.equal(reviewCopy('manual', false, false, false).title, 'Add an item');
+  // Even carrying a notice, which manual entry never does — the source wins.
+  assert.equal(reviewCopy('manual', true, true, true).title, 'Add an item');
 });

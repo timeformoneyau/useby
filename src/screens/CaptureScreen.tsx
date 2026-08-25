@@ -61,8 +61,9 @@ export default function CaptureScreen() {
       if (!photo) throw new Error('No photo captured.');
 
       // Resize/compress client-side. Kept from since-fresh, and now
-      // load-bearing: the proxy rejects anything over ~4.4MB decoded, and a
-      // smaller upload is a faster scan on a phone in a kitchen.
+      // load-bearing: the proxy rejects anything it cannot fit inside Vercel's
+      // request-body limit, and a smaller upload is a faster scan on a phone in
+      // a kitchen.
       const manipulated = await ImageManipulator.manipulateAsync(
         photo.uri,
         [{ resize: { width: 1200 } }],
@@ -71,7 +72,26 @@ export default function CaptureScreen() {
 
       if (!manipulated.base64) throw new Error('Could not process the photo.');
       imageBase64 = manipulated.base64;
-    } catch {
+
+      // What the model is actually being given. Both pairs of dimensions are
+      // here because the interesting failure is the difference between them:
+      // the resize constrains the *width*, so a landscape shot arrives at
+      // 1200x900 where the proxy would have accepted 1568 on the long edge.
+      // If real packaging reads badly, this line says whether resolution is a
+      // plausible cause before anything gets changed on a hunch.
+      console.log(
+        `useby.capture ${JSON.stringify({
+          shot: { w: photo.width, h: photo.height },
+          sent: { w: manipulated.width, h: manipulated.height },
+          kb: Math.round(imageBase64.length / 1024),
+        })}`,
+      );
+    } catch (e) {
+      // Pre-request, so there is no secret anywhere near this: the message is
+      // the only thing that says whether the camera, the file or the resize
+      // gave up, and swallowing it left "couldn't use that photo" with nothing
+      // behind it.
+      console.warn('useby.capture failed:', e instanceof Error ? e.message : e);
       setError("Couldn't use that photo — try again, or type it in.");
       setPhase('idle');
       return;

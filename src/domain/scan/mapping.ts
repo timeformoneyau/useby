@@ -178,6 +178,50 @@ export function toPrefill(
   };
 }
 
+/**
+ * How the Review & Save screen introduces itself, given what the scan returned.
+ *
+ * Lives here rather than in the screen so the offline suite can hold it to the
+ * response contract: the four variants are a direct function of the prefill,
+ * and getting one wrong tells the user we read something we did not.
+ *
+ * The order matters. A photo that yielded *neither* field is the same situation
+ * as an outright failure — the model returned a well-formed 200 saying it could
+ * see nothing — and it has to be checked before the single-field cases, which
+ * each promise that the other field came back. Without that branch, an empty
+ * read fell through to "We got the date but not the item" while showing no
+ * date at all.
+ */
+export function reviewCopy(
+  source: ItemSource,
+  hasNotice: boolean,
+  hasName: boolean,
+  hasDate: boolean,
+): { title: string; note: string } {
+  if (source === 'manual') {
+    return { title: 'Add an item', note: 'The same three fields, nothing filled in.' };
+  }
+  if (hasNotice || (!hasName && !hasDate)) {
+    return {
+      title: "We couldn't read that one",
+      note: 'Type it in instead, or retake the photo.',
+    };
+  }
+  if (!hasName) {
+    return {
+      title: 'Almost there',
+      note: 'We got the date but not the item. Name it and save.',
+    };
+  }
+  if (!hasDate) {
+    return {
+      title: 'Almost there',
+      note: 'We got the item but not the date. Add it and save.',
+    };
+  }
+  return { title: "Here's what we found", note: 'Have a quick look, then save.' };
+}
+
 /** The editor's starting state when there is nothing to prefill. */
 export function emptyPrefill(source: ItemSource, notice?: string): AddScreenPrefill {
   return {

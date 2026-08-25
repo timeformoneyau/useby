@@ -18,6 +18,7 @@ import { todayString, parseDate, getDaysUntilDue } from '../utils/dateUtils';
 import { heroText, longDate, typeWord } from '../domain/items/presentation';
 import { colours, fonts, hit, radius } from '../theme';
 import DatePickerModal from '../components/DatePickerModal';
+import { reviewCopy } from '../domain/scan/mapping';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Add'>;
 type AddRoute = RouteProp<RootStackParamList, 'Add'>;
@@ -51,37 +52,6 @@ const DATE_TYPE_OPTIONS: { value: DateType; label: string }[] = [
   { value: 'unknown', label: 'Not sure' },
 ];
 
-/** Which of the artboard's review variants this arrival corresponds to. */
-function variantCopy(
-  source: ItemSource,
-  hasNotice: boolean,
-  hasName: boolean,
-  hasDate: boolean,
-): { title: string; note: string } {
-  if (source === 'manual') {
-    return { title: 'Add an item', note: 'The same three fields, nothing filled in.' };
-  }
-  if (hasNotice) {
-    return {
-      title: "We couldn't read that one",
-      note: 'Type it in instead, or retake the photo.',
-    };
-  }
-  if (!hasName) {
-    return {
-      title: 'Almost there',
-      note: 'We got the date but not the item. Name it and save.',
-    };
-  }
-  if (!hasDate) {
-    return {
-      title: 'Almost there',
-      note: 'We got the item but not the date. Add it and save.',
-    };
-  }
-  return { title: "Here's what we found", note: 'Have a quick look, then save.' };
-}
-
 export default function AddItemScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<AddRoute>();
@@ -108,7 +78,7 @@ export default function AddItemScreen() {
   const dateMissingFromScan = source === 'photo' && !dateWasRead;
   const cameFromPhoto = source === 'photo';
 
-  const { title, note } = variantCopy(
+  const { title, note } = reviewCopy(
     source,
     Boolean(prefill?.notice),
     Boolean(prefill?.name),

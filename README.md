@@ -5,7 +5,7 @@ needs eating soonest sits at the top of the list.
 
 ## Status
 
-Phase 2 — local storage, plus one network call. Items live on the device in
+Phase 3A — local storage, plus one network call. Items live on the device in
 AsyncStorage and there is still no account and no sign-in. The single outbound
 call is the camera scan: a photo goes to UseBy's own proxy, which calls the
 Anthropic API and returns the item name, date and date type for you to review
@@ -62,6 +62,41 @@ user goes straight to manual entry.
 changing `.env` may not take effect until you clear the cache
 (`npx expo start --clear`). EAS builds start clean, so this only bites local
 iteration.
+
+### Diagnosing a scan
+
+The screen tells the user one plain sentence and nothing more — no status
+codes, no confidence readouts. That is the accepted design and it stays. During
+device testing, though, the person holding the phone is also the person
+diagnosing it, so each scan writes one line to the Android log instead:
+
+```bash
+adb logcat -s ReactNativeJS | grep useby
+```
+
+```
+useby.capture {"shot":{"w":3000,"h":4000},"sent":{"w":1200,"h":1600},"kb":287}
+useby.scan {"outcome":"ok","status":200,"kb":287,"ms":3120,"name":true,"date":true,
+            "type":"use_by","checks":{"name":false,"date":true}}
+```
+
+`useby.capture` is what the camera produced and what was actually uploaded —
+the resize constrains the *width*, so a landscape shot is sent smaller than a
+portrait one. `useby.scan` is the round trip: `outcome` is the failure reason or
+`ok`, `code` carries the proxy's own category on a failure, and `name`/`date`
+say whether the model actually returned each field. **A `200` is not the same
+as a useful read** — the model can return nulls for both and still succeed, so
+`"outcome":"ok","name":false,"date":false` is the line that means "the pipeline
+works and the photo defeated it".
+
+Nothing secret goes into these lines: not the bearer token, not the image, not
+the error object — which in some runtimes stringifies the request that produced
+it, headers included. Only the fields shown above.
+
+The matching server-side line is in the proxy's Vercel log, one JSON entry per
+request under `"evt":"parse-expiry"`, carrying the image dimensions the model
+actually saw and where the time went. Between the two, a failed scan can be
+placed at capture, transport, upstream, parsing or the model itself.
 
 ## Remaining setup: link the EAS project
 
