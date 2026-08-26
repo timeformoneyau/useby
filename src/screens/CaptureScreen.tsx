@@ -12,10 +12,10 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
-import { scanPhoto } from '../domain/scan/client';
 import { emptyPrefill } from '../domain/scan/mapping';
 import { newScanId, scanTrace } from '../domain/scan/diagnostics';
-import ReadingIndicator from '../components/ReadingIndicator';
+import { scanQueue } from '../domain/scan/queue';
+import { usePendingCounts } from '../domain/scan/usePendingScans';
 import { colours, fonts, hit, radius } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
@@ -28,10 +28,22 @@ type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
  * proxy, which calls the Anthropic API and returns the item name, date and date
  * type with a per-field confidence.
  *
- * The screen never blocks on that call succeeding. Whatever comes back — a
- * clean read, a partial one, or nothing at all — the user lands in the same
- * Review & Save editor, prefilled as far as the read allowed. A failed scan is
- * a prefill with a note on it, not a dead end.
+ * **This screen no longer waits for that call.** It used to: shutter, resize,
+ * await the proxy behind a full-screen "Reading the label…", then hand the
+ * result on as a navigation parameter. Production timing settled why that had
+ * to go — ~1.85s of server time per scan, ~88% of it the model — and no
+ * plausible tuning of the rest changes how it feels to photograph eight items
+ * one after another. So the shutter now hands the photo to `scanQueue` and
+ * returns to ready immediately. Results land on Home as drafts.
+ *
+ * The screen therefore owns no request. That is the point: it can be unmounted,
+ * navigated away from, or left entirely while scans are still in flight, and
+ * nothing is cancelled and nothing is lost.
+ *
+ * What it does *not* do is navigate away when a scan finishes. Whoever is
+ * holding the phone is halfway through a bag of shopping; the app deciding they
+ * are finished, because a network call happened to return, would be exactly the
+ * interruption this work exists to remove.
  *
  * Kept sparse deliberately: no scanner theatre, no bounding boxes, no
  * confidence readouts. The artboard also shows a "Flash auto" control, which is
@@ -44,13 +56,16 @@ export default function CaptureScreen() {
   const cameraRef = useRef<CameraView>(null);
 
   /**
-   * 'capturing' covers the shutter and the resize; 'reading' covers the wait on
-   * the proxy. They are separate because the second one is the slow half and
-   * deserves to say what it is doing.
+   * Only the local half of a capture blocks the shutter now — the photo and the
+   * resize, which are fast and genuinely cannot overlap on one camera. The wait
+   * on the proxy used to be a third phase here and is gone entirely.
    */
-  const [phase, setPhase] = useState<'idle' | 'capturing' | 'reading'>('idle');
+  const [phase, setPhase] = useState<'idle' | 'capturing'>('idle');
   const [error, setError] = useState<string | null>(null);
   const busy = phase !== 'idle';
+
+  const { counts, line } = usePendingCounts();
+  const anyPending = counts.checking + counts.toReview > 0;
 
   async function handleCapture() {
     if (busy || !cameraRef.current) return;
@@ -126,16 +141,15 @@ export default function CaptureScreen() {
       return;
     }
 
-    setPhase('reading');
-    const result = await scanPhoto(imageBase64, scanId, {
-      shutterAt,
-      captureMs,
-      resizeMs,
+    // Hand it over and let go. Nothing below this line awaits the model, and
+    // nothing about this scan is owned by this component any more.
+    scanQueue.add({
+      scanId,
+      imageBase64,
+      capture: { shutterAt, captureMs, resizeMs },
     });
 
-    navigation.replace('Add', {
-      prefill: result.ok ? result.prefill : emptyPrefill('photo', result.message),
-    });
+    setPhase('idle');
   }
 
   if (!permission) {
@@ -168,25 +182,21 @@ export default function CaptureScreen() {
     );
   }
 
-  // The wait on the model gets the whole screen: there is nothing to frame any
-  // more, and a live preview underneath would invite another shot mid-request.
-  if (phase === 'reading') {
-    return (
-      <SafeAreaView style={styles.reading}>
-        <ReadingIndicator />
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView style={styles.shell}>
       <View style={styles.topRow}>
+        {/*
+          "Done" once anything is outstanding, because by then leaving is not
+          abandoning a capture — it is finishing unpacking and going to look at
+          what came back. "Cancel" would misdescribe it.
+        */}
         <TouchableOpacity
           onPress={() => navigation.goBack()}
           disabled={busy}
           style={styles.cancelBtn}
+          accessibilityRole="button"
         >
-          <Text style={styles.cancelText}>Cancel</Text>
+          <Text style={styles.cancelText}>{anyPending ? 'Done' : 'Cancel'}</Text>
         </TouchableOpacity>
       </View>
 
@@ -210,6 +220,23 @@ export default function CaptureScreen() {
       <Text style={styles.hint}>
         Keep the item name and printed date visible if you can
       </Text>
+
+      {/*
+        Directly under the guidance and above the shutter, because this is the
+        acknowledgement that a photo was taken: press the button and the number
+        under your thumb goes up. In the corner it was true but easy to miss,
+        and "did that work?" is the question a camera that no longer pauses has
+        to answer without being asked.
+
+        Counts and nothing else. No percentage, no stage sequence, no estimate —
+        the model's timing is unknowable from here, and inventing a number to
+        fill the silence is exactly what the design forbids.
+      */}
+      {line && (
+        <Text style={styles.pendingLine} accessibilityLiveRegion="polite">
+          {line}
+        </Text>
+      )}
 
       {error && (
         <View style={styles.errorBanner}>
@@ -296,6 +323,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: fonts.regular,
     color: colours.cameraText,
+  },
+  /* Dimmer than the guidance above it: informative, never the thing competing
+     with the shutter for attention. */
+  pendingLine: {
+    paddingHorizontal: 30,
+    paddingTop: 2,
+    textAlign: 'center',
+    fontSize: 13.5,
+    fontFamily: fonts.regular,
+    color: colours.cameraDim,
   },
 
   preview: {
@@ -392,12 +429,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   shutterDisabled: { opacity: 0.6 },
-
-  reading: {
-    flex: 1,
-    backgroundColor: colours.cameraBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 16,
-  },
 });

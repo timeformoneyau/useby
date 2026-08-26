@@ -107,6 +107,19 @@ export interface AddScreenPrefill {
 
 export type RootStackParamList = {
   Main: undefined;
-  Add: { prefill?: AddScreenPrefill } | undefined;
+  /**
+   * Review & Save.
+   *
+   * `prefill` is unchanged and still carries the editor's whole starting state,
+   * so manual entry and the scan-review path stay one contract. `scanId` is
+   * additive and says only "this editor is showing a pending scan": it lets
+   * Save retire that draft and offers Discard, and its absence is what makes a
+   * manual add indistinguishable from before.
+   *
+   * The draft is deliberately *not* looked up by id instead — passing the
+   * prefill keeps the screen a pure function of its parameters, so a draft
+   * retired mid-edit cannot empty the form underneath the user.
+   */
+  Add: { prefill?: AddScreenPrefill; scanId?: string } | undefined;
   Capture: undefined;
 };

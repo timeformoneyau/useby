@@ -50,16 +50,40 @@ export type CaptureTimings = {
   shutterAt: number;
   captureMs: number;
   resizeMs: number;
+  /**
+   * How long the scan sat in the queue before its request went out.
+   *
+   * Supplied by the queue, which is the only thing that knows it. Optional
+   * because a scan that found a free slot immediately did not queue at all, and
+   * logging `0` for that is a different claim from logging nothing.
+   */
+  queuedMs?: number;
 };
 
 /** Where a scan's seconds went. Every field is milliseconds. */
 export type ScanTimings = {
-  /** Shutter to result. The number the person actually waits through. */
+  /**
+   * Shutter to result.
+   *
+   * Still measured from the shutter, and still the elapsed life of the scan —
+   * but since captures became non-blocking this is no longer time anyone spent
+   * waiting. The camera came back immediately; this ran on in the background.
+   * `queuedMs` is what keeps the number decomposable rather than merely larger.
+   */
   totalMs: number;
   /** `takePictureAsync` — the shutter and the file write. */
   captureMs: number;
   /** `manipulateAsync` — resize, JPEG re-encode and base64 encode. */
   resizeMs: number;
+  /**
+   * Waiting for a concurrency slot. Not latency — nothing was happening.
+   *
+   * Kept as its own field rather than folded into `requestMs`, so a queue that
+   * is too tight can never be misread as a slow network or a slow model. If
+   * this is consistently large, the cap is wrong; if it is near zero, the cap
+   * is not what is costing time.
+   */
+  queuedMs?: number;
   /** The whole `fetch`, request to parsed response. */
   requestMs: number;
   /** The proxy's own elapsed time, from its header. Absent if it did not say. */
@@ -83,12 +107,14 @@ export type ScanTimings = {
  * reads as a bug rather than as the noise it is.
  */
 export function timingBreakdown(timings: ScanTimings): Record<string, number> {
-  const { totalMs, captureMs, resizeMs, requestMs, serverMs, modelMs } = timings;
+  const { totalMs, captureMs, resizeMs, queuedMs, requestMs, serverMs, modelMs } =
+    timings;
 
   return {
     totalMs,
     captureMs,
     resizeMs,
+    ...(queuedMs === undefined ? {} : { queuedMs }),
     requestMs,
     ...(serverMs === undefined
       ? {}

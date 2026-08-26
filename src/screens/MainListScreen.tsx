@@ -15,7 +15,11 @@ import { UseByItem, RootStackParamList } from '../types';
 import { DerivedItem } from '../domain/items/types';
 import { getDerivedItems, removeItem } from '../domain/items/service';
 import { groupItems, headerCount } from '../domain/items/presentation';
+import { emptyPrefill, failureMessage } from '../domain/scan/mapping';
+import { usePendingScans } from '../domain/scan/usePendingScans';
+import type { PendingScan } from '../domain/scan/pending';
 import ItemCard from '../components/ItemCard';
+import PendingScansStrip from '../components/PendingScansStrip';
 import { colours, fonts, hit, radius } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Main'>;
@@ -49,6 +53,26 @@ export default function MainListScreen() {
     refresh();
   }
 
+  /**
+   * Open a finished scan into the editor it was always going to end in.
+   *
+   * The draft is *not* retired here — only saving or an explicit discard does
+   * that. Backing out of the editor has to leave the scan exactly where it was,
+   * because someone who opens a draft, reads it and changes their mind has not
+   * asked to throw a photograph away.
+   *
+   * The fallback prefill covers the one case the queue cannot produce a draft
+   * for — a runner that threw outright — so even that opens a usable editor
+   * instead of a blank screen or a crash.
+   */
+  function handleOpenScan(scan: PendingScan) {
+    navigation.navigate('Add', {
+      prefill: scan.prefill ?? emptyPrefill('photo', failureMessage('server')),
+      scanId: scan.scanId,
+    });
+  }
+
+  const pending = usePendingScans();
   const sections = groupItems(items);
 
   // The action bar floats over the list, so the list needs to be able to
@@ -72,14 +96,23 @@ export default function MainListScreen() {
       </View>
 
       {items.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <View style={styles.emptyMark} />
-          <Text style={styles.emptyTitle}>Nothing to keep an eye on yet.</Text>
-          <Text style={styles.emptyBody}>
-            Photograph food as you put it away and UseBy will tell you what to use
-            first. A few seconds per item, no lists to keep.
-          </Text>
-        </View>
+        <>
+          {/* Above the empty state rather than inside it: the copy is still
+              true — nothing is *tracked* yet — and a first-time scan should be
+              visible while it is being read rather than swallowed by a screen
+              that says there is nothing here. */}
+          <View style={styles.emptyStrip}>
+            <PendingScansStrip scans={pending} onOpen={handleOpenScan} />
+          </View>
+          <View style={styles.emptyContainer}>
+            <View style={styles.emptyMark} />
+            <Text style={styles.emptyTitle}>Nothing to keep an eye on yet.</Text>
+            <Text style={styles.emptyBody}>
+              Photograph food as you put it away and UseBy will tell you what to use
+              first. A few seconds per item, no lists to keep.
+            </Text>
+          </View>
+        </>
       ) : (
         <SectionList
           sections={sections}
@@ -87,6 +120,14 @@ export default function MainListScreen() {
           stickySectionHeadersEnabled={false}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[styles.list, { paddingBottom: listBottomPadding }]}
+          // A list header rather than a fixed banner, so a run of drafts scrolls
+          // away instead of eating the screen the list is supposed to be.
+          // Passed as an element: an inline component would be a new type on
+          // every render and remount the strip — restarting its animation each
+          // time the list refreshed.
+          ListHeaderComponent={
+            <PendingScansStrip scans={pending} onOpen={handleOpenScan} />
+          }
           renderSectionHeader={({ section }) => (
             <View style={styles.groupHeader}>
               <Text style={styles.groupLabel}>{section.label}</Text>
@@ -206,6 +247,7 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: radius.group,
   },
 
+  emptyStrip: { paddingHorizontal: 14 },
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',

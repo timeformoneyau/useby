@@ -91,9 +91,11 @@ export async function scanPhoto(
    * One line per scan, always carrying the timing breakdown.
    *
    * `totalMs` is measured from the shutter rather than from this function, so
-   * it is the wait the person actually experienced. Everything else divides
-   * that up. A failure gets the same treatment as a success — a scan that took
-   * eight seconds and then failed is exactly the case worth accounting for.
+   * it is the whole elapsed life of the scan. Everything else divides that up —
+   * including `queuedMs`, which since captures became non-blocking can be a
+   * real share of it and must stay separable from time on the wire. A failure
+   * gets the same treatment as a success: a scan that took eight seconds and
+   * then failed is exactly the case worth accounting for.
    */
   const trace = (entry: Record<string, unknown>) => {
     const requestMs = Date.now() - startedAt;
@@ -102,6 +104,7 @@ export async function scanPhoto(
         totalMs: Date.now() - stopwatch.shutterAt,
         captureMs: stopwatch.captureMs,
         resizeMs: stopwatch.resizeMs,
+        queuedMs: stopwatch.queuedMs,
         requestMs,
         ...serverTimings,
       }),

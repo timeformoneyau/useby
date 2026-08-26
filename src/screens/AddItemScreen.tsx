@@ -19,6 +19,7 @@ import { heroText, longDate, typeWord } from '../domain/items/presentation';
 import { colours, fonts, hit, radius } from '../theme';
 import DatePickerModal from '../components/DatePickerModal';
 import { reviewCopy } from '../domain/scan/mapping';
+import { scanQueue } from '../domain/scan/queue';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Add'>;
 type AddRoute = RouteProp<RootStackParamList, 'Add'>;
@@ -57,6 +58,15 @@ export default function AddItemScreen() {
   const route = useRoute<AddRoute>();
   const insets = useSafeAreaInsets();
   const prefill = route.params?.prefill;
+  /**
+   * Set when this editor is showing a pending scan rather than a manual add.
+   *
+   * Its only jobs are to retire the draft once the item is saved and to offer
+   * Discard. The form itself is still driven entirely by `prefill`, so nothing
+   * about a manual add changes and the editor cannot be emptied underneath the
+   * user by a draft disappearing from the queue mid-edit.
+   */
+  const scanId = route.params?.scanId;
   const nameRef = useRef<TextInput>(null);
 
   const [name, setName] = useState(prefill?.name ?? '');
@@ -91,10 +101,45 @@ export default function AddItemScreen() {
     return () => clearTimeout(timer);
   }, [prefill?.name]);
 
+  /**
+   * A ref, not state: it has to take effect within the same tick as the tap.
+   *
+   * `createItem` is an await away from the button, and a second press landing
+   * in that gap would write the item twice. Re-rendering with a disabled button
+   * is too late — the guard has to be readable before React has done anything.
+   * Previously theoretical; with drafts there is now a list of things to save in
+   * a row, which is exactly when people double-tap.
+   */
+  const savingRef = useRef(false);
+
   async function handleSave() {
     const trimmed = name.trim();
-    if (!trimmed) return;
-    await createItem({ name: trimmed, expiryDate, dateType, source });
+    if (!trimmed || savingRef.current) return;
+    savingRef.current = true;
+
+    try {
+      await createItem({ name: trimmed, expiryDate, dateType, source });
+      // Retire the draft only once the item is genuinely stored. Reversed, a
+      // failed write would take the scan with it and leave nothing behind.
+      if (scanId) scanQueue.remove(scanId);
+      navigation.navigate('Main');
+    } catch {
+      // Let them try again rather than stranding a filled-in form behind a
+      // permanently disabled button.
+      savingRef.current = false;
+    }
+  }
+
+  /**
+   * Throw this scan away. The one destructive action here, and explicit.
+   *
+   * Deliberately not on the Home row: a small target beside a draft is a
+   * mis-tap waiting to happen, and this way the scan is only ever discarded by
+   * someone who has just looked at what it is. That is also why there is no
+   * confirmation dialog — the screen already is the confirmation.
+   */
+  function handleDiscard() {
+    if (scanId) scanQueue.remove(scanId);
     navigation.navigate('Main');
   }
 
@@ -109,12 +154,25 @@ export default function AddItemScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.topRow}>
+          {/*
+            Back is non-destructive, and that is the deliberate choice: a scan
+            opened, read and backed out of stays on Home exactly as it was.
+            Losing a photograph because someone wanted a second look at the
+            packet would be the worst possible reading of "review before save".
+            Discard, below, is the way to actually get rid of one.
+          */}
           <TouchableOpacity
             style={styles.topBtn}
             onPress={() => navigation.navigate('Main')}
           >
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
+          {/*
+            Retake leaves the draft alone too. Discarding it here would be
+            reasonable right up until someone opens the camera, changes their
+            mind and backs out — at which point the original scan would be gone
+            and nothing would have replaced it.
+          */}
           {cameFromPhoto && (
             <TouchableOpacity
               style={styles.topBtn}
@@ -238,6 +296,16 @@ export default function AddItemScreen() {
               </Text>
             )}
           </View>
+
+          {scanId && (
+            <TouchableOpacity
+              style={styles.discardBtn}
+              onPress={handleDiscard}
+              accessibilityRole="button"
+            >
+              <Text style={styles.discardText}>Discard this scan</Text>
+            </TouchableOpacity>
+          )}
         </ScrollView>
 
         <View style={[styles.saveBar, { paddingBottom: insets.bottom + 22 }]}>
@@ -371,6 +439,14 @@ const styles = StyleSheet.create({
     color: colours.textSecondary,
   },
   previewText: { fontSize: 13.5, fontFamily: fonts.regular, color: colours.textSecondary },
+
+  /* Below the fields and quiet: reachable, never the thing the eye lands on. */
+  discardBtn: {
+    minHeight: hit.minTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  discardText: { fontSize: 14, fontFamily: fonts.medium, color: colours.secondaryAction },
 
   warnRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   warnMark: {
