@@ -27,6 +27,99 @@
 export const SCAN_ID_HEADER = 'X-UseBy-Scan-Id';
 
 /**
+ * Timing the proxy reports back, so one log line accounts for a whole scan.
+ *
+ * Without these the phone knows only how long the round trip took, and telling
+ * "the model was slow" from "the upload was slow" would mean pulling the
+ * matching server line out of Vercel — which retains runtime logs for about an
+ * hour on the current plan. Reading them here keeps a scan diagnosable from the
+ * device alone.
+ */
+export const SERVER_MS_HEADER = 'X-UseBy-Server-Ms';
+export const MODEL_MS_HEADER = 'X-UseBy-Model-Ms';
+
+/**
+ * What the phone measured before the request went out.
+ *
+ * Handed to `scanPhoto` rather than measured inside it, because the wait that
+ * matters starts at the shutter — the capture and the resize happen before the
+ * network is involved at all, and on a slow phone they are not free.
+ */
+export type CaptureTimings = {
+  /** `Date.now()` at the moment the shutter was pressed. */
+  shutterAt: number;
+  captureMs: number;
+  resizeMs: number;
+};
+
+/** Where a scan's seconds went. Every field is milliseconds. */
+export type ScanTimings = {
+  /** Shutter to result. The number the person actually waits through. */
+  totalMs: number;
+  /** `takePictureAsync` — the shutter and the file write. */
+  captureMs: number;
+  /** `manipulateAsync` — resize, JPEG re-encode and base64 encode. */
+  resizeMs: number;
+  /** The whole `fetch`, request to parsed response. */
+  requestMs: number;
+  /** The proxy's own elapsed time, from its header. Absent if it did not say. */
+  serverMs?: number;
+  /** The Anthropic call, from the proxy's header. Only present on a success. */
+  modelMs?: number;
+};
+
+/**
+ * Turn raw stopwatch readings into the breakdown worth logging.
+ *
+ * The one derived figure is `overheadMs`: the round trip less whatever the
+ * server says it spent, which is everything that is neither the phone nor the
+ * proxy — DNS, TLS, uploading ~300KB over mobile data, Vercel's routing and any
+ * cold start, and the response coming back. React Native's `fetch` exposes no
+ * transfer timings, so upload and download genuinely cannot be separated; one
+ * honest aggregate is better than an invented split.
+ *
+ * Clamped at zero. The two clocks are different machines, so rounding or a
+ * little skew can make the subtraction negative, and a negative "overhead"
+ * reads as a bug rather than as the noise it is.
+ */
+export function timingBreakdown(timings: ScanTimings): Record<string, number> {
+  const { totalMs, captureMs, resizeMs, requestMs, serverMs, modelMs } = timings;
+
+  return {
+    totalMs,
+    captureMs,
+    resizeMs,
+    requestMs,
+    ...(serverMs === undefined
+      ? {}
+      : { serverMs, overheadMs: Math.max(0, requestMs - serverMs) }),
+    ...(modelMs === undefined ? {} : { modelMs }),
+  };
+}
+
+/**
+ * Read one of the proxy's timing headers.
+ *
+ * Data from a separately deployed service, so it is parsed defensively and
+ * bounded: anything absent, non-numeric, negative or implausibly large is
+ * dropped rather than logged as fact. An hour is far beyond any value this
+ * pipeline can legitimately produce — the client gives up at 30 seconds.
+ */
+export function readTimingHeader(value: string | null): number | undefined {
+  if (value === null) return undefined;
+
+  // `Number('')` and `Number('   ')` are both 0, so an empty header would
+  // otherwise be recorded as a measured zero milliseconds — a fabricated
+  // reading that looks exactly like a real one. Reject blank before parsing.
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 3_600_000) return undefined;
+  return Math.round(parsed);
+}
+
+/**
  * Name one scan, once, at the shutter.
  *
  * The id is minted before the photo is taken rather than before the request is

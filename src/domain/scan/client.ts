@@ -12,7 +12,15 @@
  * no date.
  */
 import { isScanConfigured, parseExpiryUrl, proxySecret } from '../../config/proxy';
-import { SCAN_ID_HEADER, scanTrace } from './diagnostics';
+import type { CaptureTimings } from './diagnostics';
+import {
+  MODEL_MS_HEADER,
+  SCAN_ID_HEADER,
+  SERVER_MS_HEADER,
+  readTimingHeader,
+  scanTrace,
+  timingBreakdown,
+} from './diagnostics';
 import {
   describeRead,
   mappingDrops,
@@ -71,11 +79,36 @@ function echoedId(response: Response): string | null {
 export async function scanPhoto(
   imageBase64: string,
   scanId: string,
+  stopwatch: CaptureTimings,
 ): Promise<ScanResult> {
   const startedAt = Date.now();
   const kb = Math.round(imageBase64.length / 1024);
-  const trace = (entry: Record<string, unknown>) =>
-    scanTrace(scanId, 'request', { ms: Date.now() - startedAt, kb, ...entry });
+
+  /** Filled in from the proxy's headers once a response arrives. */
+  let serverTimings: { serverMs?: number; modelMs?: number } = {};
+
+  /**
+   * One line per scan, always carrying the timing breakdown.
+   *
+   * `totalMs` is measured from the shutter rather than from this function, so
+   * it is the wait the person actually experienced. Everything else divides
+   * that up. A failure gets the same treatment as a success — a scan that took
+   * eight seconds and then failed is exactly the case worth accounting for.
+   */
+  const trace = (entry: Record<string, unknown>) => {
+    const requestMs = Date.now() - startedAt;
+    scanTrace(scanId, 'request', {
+      ...timingBreakdown({
+        totalMs: Date.now() - stopwatch.shutterAt,
+        captureMs: stopwatch.captureMs,
+        resizeMs: stopwatch.resizeMs,
+        requestMs,
+        ...serverTimings,
+      }),
+      kb,
+      ...entry,
+    });
+  };
 
   if (!isScanConfigured() || proxySecret === null) {
     trace({ outcome: 'not-configured' });
@@ -118,6 +151,13 @@ export async function scanPhoto(
   }
 
   const echo = echoedId(response);
+
+  // Read before anything can return: every branch below wants them, and a
+  // failure's timing is as interesting as a success's.
+  serverTimings = {
+    serverMs: readTimingHeader(response.headers.get(SERVER_MS_HEADER)),
+    modelMs: readTimingHeader(response.headers.get(MODEL_MS_HEADER)),
+  };
 
   if (!response.ok) {
     const reason = reasonForStatus(response.status);

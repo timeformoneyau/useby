@@ -15,6 +15,7 @@ import { RootStackParamList } from '../types';
 import { scanPhoto } from '../domain/scan/client';
 import { emptyPrefill } from '../domain/scan/mapping';
 import { newScanId, scanTrace } from '../domain/scan/diagnostics';
+import ReadingIndicator from '../components/ReadingIndicator';
 import { colours, fonts, hit, radius } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
@@ -61,12 +62,23 @@ export default function CaptureScreen() {
     // "nothing happened at all" is a diagnosis rather than a gap.
     const scanId = newScanId();
 
+    // The wait the person actually experiences starts here, not when the
+    // request goes out. Capture and resize happen before the network is
+    // involved and on a slow phone they are not free, so they are timed
+    // separately rather than disappearing into "it took eight seconds".
+    const shutterAt = Date.now();
+
     let imageBase64: string;
+    let captureMs = 0;
+    let resizeMs = 0;
     let stage: 'camera' | 'resize' | 'encode' = 'camera';
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
       if (!photo) throw new Error('No photo captured.');
+      captureMs = Date.now() - shutterAt;
       stage = 'resize';
+
+      const resizeStartedAt = Date.now();
 
       // Resize/compress client-side. Kept from since-fresh, and now
       // load-bearing: the proxy rejects anything it cannot fit inside Vercel's
@@ -81,6 +93,7 @@ export default function CaptureScreen() {
       stage = 'encode';
       if (!manipulated.base64) throw new Error('Could not process the photo.');
       imageBase64 = manipulated.base64;
+      resizeMs = Date.now() - resizeStartedAt;
 
       // What the model is actually being given. Both pairs of dimensions are
       // here because the interesting failure is the difference between them:
@@ -90,6 +103,8 @@ export default function CaptureScreen() {
       // plausible cause before anything gets changed on a hunch.
       scanTrace(scanId, 'capture', {
         outcome: 'ok',
+        captureMs,
+        resizeMs,
         shot: { w: photo.width, h: photo.height },
         sent: { w: manipulated.width, h: manipulated.height },
         kb: Math.round(imageBase64.length / 1024),
@@ -102,6 +117,8 @@ export default function CaptureScreen() {
       scanTrace(scanId, 'capture', {
         outcome: 'capture-failed',
         at: stage,
+        totalMs: Date.now() - shutterAt,
+        captureMs,
         err: e instanceof Error ? e.message.slice(0, 200) : typeof e,
       });
       setError("Couldn't use that photo — try again, or type it in.");
@@ -110,7 +127,11 @@ export default function CaptureScreen() {
     }
 
     setPhase('reading');
-    const result = await scanPhoto(imageBase64, scanId);
+    const result = await scanPhoto(imageBase64, scanId, {
+      shutterAt,
+      captureMs,
+      resizeMs,
+    });
 
     navigation.replace('Add', {
       prefill: result.ok ? result.prefill : emptyPrefill('photo', result.message),
@@ -152,8 +173,7 @@ export default function CaptureScreen() {
   if (phase === 'reading') {
     return (
       <SafeAreaView style={styles.reading}>
-        <View style={styles.readingMark} />
-        <Text style={styles.readingText}>Reading the label…</Text>
+        <ReadingIndicator />
       </SafeAreaView>
     );
   }
@@ -179,7 +199,17 @@ export default function CaptureScreen() {
         <View style={[styles.bracket, styles.bracketBR]} />
       </View>
 
-      <Text style={styles.hint}>Include the product name and the printed date</Text>
+      {/*
+        Guidance, not a rule. "if you can" is doing real work here: a close-up
+        of just the date panel is a perfectly good capture, and the earlier
+        imperative wording implied it was not. Deliberately not "expiry date" —
+        under D1 that is precisely the word the packaging may not have used, and
+        the app is careful everywhere else not to call an unlabelled date an
+        expiry. No crop box, for the same reason.
+      */}
+      <Text style={styles.hint}>
+        Keep the item name and printed date visible if you can
+      </Text>
 
       {error && (
         <View style={styles.errorBanner}>
@@ -369,17 +399,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 16,
-  },
-  readingMark: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    borderBottomLeftRadius: 4,
-    backgroundColor: colours.sage,
-  },
-  readingText: {
-    fontSize: 14.5,
-    fontFamily: fonts.regular,
-    color: colours.cameraText,
   },
 });

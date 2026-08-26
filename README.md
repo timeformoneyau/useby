@@ -80,10 +80,29 @@ one for the round trip — both carrying the same `scanId`:
 ```
 useby.scan {"scanId":"p-mfk2j8x1-4b7c9","stage":"capture","outcome":"ok",
             "shot":{"w":3000,"h":4000},"sent":{"w":1200,"h":1600},"kb":287}
-useby.scan {"scanId":"p-mfk2j8x1-4b7c9","stage":"request","ms":3120,"kb":287,
-            "outcome":"ok","status":200,"read":"name-only","dropped":[],
-            "type":"unknown","checks":{"name":false,"date":true},"idEchoed":true}
+useby.scan {"scanId":"p-mfk2j8x1-4b7c9","stage":"request","totalMs":4820,
+            "captureMs":310,"resizeMs":240,"requestMs":4210,"serverMs":3990,
+            "overheadMs":220,"modelMs":3550,"kb":287,"outcome":"ok","status":200,
+            "read":"name-only","dropped":[],"type":"unknown","idEchoed":true}
 ```
+
+**Where a slow scan spent its time.** The `request` line accounts for the whole
+wait, so `grep useby.scan` answers it without opening Vercel:
+
+| Field | What it covers |
+|---|---|
+| `totalMs` | Shutter to result — the wait the person actually sat through |
+| `captureMs` | `takePictureAsync`: the shutter and the file write |
+| `resizeMs` | `manipulateAsync`: resize, JPEG re-encode, base64 encode |
+| `requestMs` | The whole `fetch` |
+| `serverMs` | What the proxy says it spent, from its response header |
+| `overheadMs` | `requestMs − serverMs` — upload, TLS, Vercel routing, response transfer |
+| `modelMs` | The Anthropic call, from the proxy's header |
+
+Upload and download are **not** separated: React Native's `fetch` exposes no
+transfer timings, so `overheadMs` is one honest aggregate rather than an
+invented split. `serverMs`, `overheadMs` and `modelMs` are absent when the proxy
+did not report them — better silence than a fabricated number.
 
 **`scanId` is the whole point.** The app sends it to the proxy in an
 `X-UseBy-Scan-Id` header, the proxy adopts it as its own log id and echoes it
