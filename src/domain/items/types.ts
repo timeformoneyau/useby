@@ -5,6 +5,8 @@ export interface CreateItemInput {
   expiryDate: string;
   dateType?: DateType;
   source?: ItemSource;
+  /** Filename of an already-retained photo. See `UseByItem.photo`. */
+  photo?: string;
 }
 
 /** A UseByItem with all computed fields attached. Single source of truth for derived state. */

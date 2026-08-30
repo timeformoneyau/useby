@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   Alert,
   Animated,
   PanResponder,
+  Pressable,
 } from 'react-native';
 import { UseByItem } from '../types';
 import { computeItemStatus } from '../utils/statusUtils';
@@ -19,6 +20,8 @@ interface Props {
   onMarkUsed: (item: UseByItem) => void;
   /** The item was added by mistake. */
   onDelete: (item: UseByItem) => void;
+  /** Open Item Detail. */
+  onOpen: (item: UseByItem) => void;
   /** Hide the divider on the first row of a group card. */
   isFirst: boolean;
 }
@@ -34,14 +37,25 @@ const SWIPE_THRESHOLD = 60;
  * flexible middle; the calendar date is a footnote on the right.
  *
  * The artboard has no controls on the row at all — it taps through to an Item
- * Detail screen that carries Used / Threw it out / Delete. That screen is Phase
- * 4 work and does not exist yet, so removal stays on the swipe it already had,
- * widened to offer Used alongside Delete. Without it there would be no way to
- * take anything off the list. When Detail arrives this can become a plain tap
- * target and the swipe can go back to being a shortcut rather than the only
- * route, which is what the accepted design asks for.
+ * Detail screen carrying the actions. That screen now exists, so the row is a
+ * tap target and the swipe is what the design always intended it to be: a
+ * shortcut, not the only way to take something off the list.
+ *
+ * Both gestures on one row, and the arbitration is the fiddly part. The
+ * pan responder only claims the gesture once the finger has travelled 8dp
+ * horizontally, so a tap never reaches it and the press wins by default. The
+ * one case that needs stating is a tap while the row is already swiped open:
+ * that closes the row rather than navigating, because a screen arriving when
+ * you meant to put the actions away is the worse surprise, and it is also how
+ * every other list behaves.
  */
-export default function ItemCard({ item, onMarkUsed, onDelete, isFirst }: Props) {
+export default function ItemCard({
+  item,
+  onMarkUsed,
+  onDelete,
+  onOpen,
+  isFirst,
+}: Props) {
   const status = computeItemStatus(item);
   const { daysUntilDue, dueDate } = status;
 
@@ -57,24 +71,50 @@ export default function ItemCard({ item, onMarkUsed, onDelete, isFirst }: Props)
 
   const translateX = useRef(new Animated.Value(0)).current;
 
+  /**
+   * Whether the actions are showing. Mirrors the animation rather than driving
+   * it — the spring owns the position; this only answers what a tap should do.
+   *
+   * A ref alongside the state for the same reason the editor keeps one: the tap
+   * handler has to know within the tick, and a re-render is too late.
+   */
+  const [open, setOpen] = useState(false);
+  const openRef = useRef(false);
+
+  function settle(toOpen: boolean) {
+    openRef.current = toOpen;
+    setOpen(toOpen);
+    Animated.spring(translateX, {
+      toValue: toOpen ? -REVEAL_WIDTH : 0,
+      useNativeDriver: true,
+    }).start();
+  }
+
   const panResponder = useRef(
     PanResponder.create({
+      // 8dp of horizontal travel before this claims the gesture, which is what
+      // leaves an ordinary tap to the press handler underneath.
       onMoveShouldSetPanResponder: (_, g) =>
         Math.abs(g.dx) > 8 && Math.abs(g.dy) < 20,
       onPanResponderMove: (_, g) => {
         if (g.dx < 0) translateX.setValue(Math.max(g.dx, -REVEAL_WIDTH));
       },
       onPanResponderRelease: (_, g) => {
-        Animated.spring(translateX, {
-          toValue: g.dx < -SWIPE_THRESHOLD ? -REVEAL_WIDTH : 0,
-          useNativeDriver: true,
-        }).start();
+        settle(g.dx < -SWIPE_THRESHOLD);
       },
     }),
   ).current;
 
   function closeSwipe() {
-    Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
+    settle(false);
+  }
+
+  function handlePress() {
+    // Put the actions away rather than navigating. Someone with a row open was
+    // looking at Used and Delete; taking them to another screen instead would
+    // be the wrong reading of the tap, and there would be no way to cancel.
+    if (openRef.current) closeSwipe();
+    else onOpen(item);
   }
 
   function handleDelete() {
@@ -112,24 +152,33 @@ export default function ItemCard({ item, onMarkUsed, onDelete, isFirst }: Props)
           { transform: [{ translateX }] },
         ]}
         {...panResponder.panHandlers}
-        accessibilityLabel={`${item.name}, ${hero}, ${subtitle}`}
       >
-        <View style={[styles.bar, { backgroundColor: barColour }]} />
-
-        <Text
-          style={[styles.hero, isHot && styles.heroHot]}
-          numberOfLines={2}
+        <Pressable
+          style={styles.pressArea}
+          onPress={handlePress}
+          accessibilityRole="button"
+          accessibilityLabel={`${item.name}, ${hero}, ${subtitle}`}
+          accessibilityHint={
+            open ? 'Closes the actions' : 'Opens this item'
+          }
         >
-          {hero}
-        </Text>
+          <View style={[styles.bar, { backgroundColor: barColour }]} />
 
-        <Text style={styles.name} numberOfLines={1}>
-          {item.name}
-        </Text>
+          <Text
+            style={[styles.hero, isHot && styles.heroHot]}
+            numberOfLines={2}
+          >
+            {hero}
+          </Text>
 
-        <Text style={styles.subtitle} numberOfLines={1}>
-          {subtitle}
-        </Text>
+          <Text style={styles.name} numberOfLines={1}>
+            {item.name}
+          </Text>
+
+          <Text style={styles.subtitle} numberOfLines={1}>
+            {subtitle}
+          </Text>
+        </Pressable>
       </Animated.View>
     </View>
   );
@@ -151,13 +200,15 @@ const styles = StyleSheet.create({
     fontFamily: fonts.semibold,
   },
 
-  row: {
+  row: { backgroundColor: colours.card },
+  /* The layout moved onto the pressable so the tap target is the whole row
+     rather than a strip inside it. */
+  pressArea: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     minHeight: hit.row,
     paddingRight: 12,
-    backgroundColor: colours.card,
   },
   rowDivided: {
     borderTopWidth: 1,

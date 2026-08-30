@@ -13,8 +13,14 @@ const STORAGE_KEY = '@useby_v1_items';
  * `undefined`, which the UI presents as an unknown date type — accurate, since
  * those items were saved before we recorded what the pack said. The version is
  * bumped to record that the shape moved, not because anything rewrites it.
+ *
+ * Version 3 added the optional `photo`, on exactly the same terms: an older
+ * record lacks it, reads back as `undefined`, and renders with no photo block —
+ * which is true, because nothing was retained for it. Nothing rewrites existing
+ * records and `isItem` does not inspect the field, so a v1 or v2 record is
+ * still a valid item and keeps working untouched.
  */
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 
 interface Envelope {
   version: number;

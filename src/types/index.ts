@@ -43,6 +43,24 @@ export interface UseByItem {
    * devices is still Phase 3 work (D2).
    */
   dateType?: DateType;
+  /**
+   * Filename of the retained scan photo, inside the app's photos directory.
+   *
+   * A **filename, never an absolute URI**, and that is the whole point of the
+   * field's shape. A `file:///…` path embeds the app container directory, and
+   * on iOS that directory changes between installs and can change across
+   * updates — every stored path would silently start pointing at nothing. The
+   * name is resolved against the photos directory at render time instead.
+   *
+   * Optional because most items do not have one: manual adds never do, and
+   * records written before this field existed read back as `undefined`. Both
+   * render with no photo block, which is the honest result rather than a
+   * degraded one. No migration is needed for the same reason `dateType` needed
+   * none at v2.
+   *
+   * Local only. This never leaves the device.
+   */
+  photo?: string;
   source: ItemSource;
   createdAt: string;
   updatedAt: string;
@@ -132,4 +150,12 @@ export type RootStackParamList = {
    * items like any others.
    */
   Capture: { replacing?: string } | undefined;
+  /**
+   * A saved item, opened from its row on Home.
+   *
+   * Carries the id and not the item: Home already re-reads storage on focus, so
+   * passing the record would mean two copies of the same item that can disagree
+   * the moment either screen changes one. The screen loads what it shows.
+   */
+  ItemDetail: { itemId: string };
 };

@@ -14,6 +14,8 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList, ItemSource, DateType } from '../types';
 import { createItem } from '../domain/items/service';
+import { photoStore } from '../domain/items/photoStore';
+import { saveScannedItem } from '../domain/items/saveScan';
 import { todayString, parseDate, getDaysUntilDue } from '../utils/dateUtils';
 import { heroText, longDate, typeWord } from '../domain/items/presentation';
 import { colours, fonts, hit, radius } from '../theme';
@@ -68,6 +70,25 @@ export default function AddItemScreen() {
    */
   const scanId = route.params?.scanId;
   const nameRef = useRef<TextInput>(null);
+
+  /**
+   * The temporary scan image, read once when the editor opens.
+   *
+   * Read from the queue rather than passed through the prefill. The 26 Aug
+   * spike planned to widen `AddScreenPrefill` with a URI, because at the time
+   * the prefill was the only thing that survived the navigation — but the
+   * pending queue now holds the image and `scanId` is already a parameter, so
+   * the widening is unnecessary. One less field on a contract that manual entry
+   * also has to satisfy.
+   *
+   * Captured at mount rather than read at Save so the screen stays a pure
+   * function of its parameters, which is the same reason the form fields come
+   * from the prefill instead of a lookup. Nothing can retake this draft without
+   * first leaving this screen, so the value cannot go stale underneath it.
+   */
+  const [pendingPhotoUri] = useState<string | undefined>(
+    () => (scanId ? scanQueue.get(scanId)?.imageUri : undefined),
+  );
 
   const [name, setName] = useState(prefill?.name ?? '');
   const [expiryDate, setExpiryDate] = useState(prefill?.expiryDate ?? todayString());
@@ -137,10 +158,25 @@ export default function AddItemScreen() {
     savingRef.current = true;
 
     try {
-      await createItem({ name: trimmed, expiryDate, dateType, source });
-      // Retire the draft only once the item is genuinely stored. Reversed, a
-      // failed write would take the scan with it and leave nothing behind.
-      if (scanId) scanQueue.remove(scanId);
+      // Retain, create, release — in that order, and the order is the point.
+      // The sequencing and every failure policy live in `saveScannedItem`,
+      // where they can be tested; this screen only supplies the wiring.
+      await saveScannedItem(
+        {
+          retain: (id, uri) => photoStore.retain(id, uri),
+          create: createItem,
+          release: (id) => scanQueue.remove(id),
+        },
+        {
+          name: trimmed,
+          expiryDate,
+          dateType,
+          source,
+          scanId,
+          photoUri: pendingPhotoUri,
+        },
+      );
+
       dismiss();
     } catch {
       // Let them try again rather than stranding a filled-in form behind a

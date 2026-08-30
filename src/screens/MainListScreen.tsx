@@ -54,6 +54,14 @@ export default function MainListScreen() {
   }
 
   /**
+   * Tap a row to open it. The swipe stays as the shortcut it was always meant
+   * to be — see the gesture note in `ItemCard`.
+   */
+  function handleOpenItem(item: UseByItem) {
+    navigation.navigate('ItemDetail', { itemId: item.id });
+  }
+
+  /**
    * Open a finished scan into the editor it was always going to end in.
    *
    * The draft is *not* retired here — only saving or an explicit discard does
@@ -146,6 +154,7 @@ export default function MainListScreen() {
                 item={item}
                 onMarkUsed={handleRemove}
                 onDelete={handleRemove}
+                onOpen={handleOpenItem}
                 isFirst={index === 0}
               />
             </View>
