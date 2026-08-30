@@ -12,6 +12,7 @@
  * binding is created once, is never unmounted, and cannot be torn down by a
  * navigation the user makes while a photo is still being read.
  */
+import { File } from 'expo-file-system';
 import { scanPhoto } from './client';
 import { emptyPrefill } from './mapping';
 import { createScanQueue, type ScanRunner } from './pending';
@@ -36,4 +37,28 @@ const run: ScanRunner = async (job) => {
     : { ok: false, prefill: emptyPrefill('photo', result.message) };
 };
 
-export const scanQueue = createScanQueue({ run });
+/**
+ * Delete the resized photo a draft was holding, once nothing refers to it.
+ *
+ * These live in the cache directory, where `manipulateAsync` writes them, and
+ * are a few hundred kilobytes each. The OS will reclaim that directory under
+ * storage pressure, so leaving them is survivable rather than a true leak — but
+ * an unpacking session is a run of them and tidying up after ourselves is
+ * cheap. The queue calls this exactly once per retained image.
+ *
+ * Fails soft, deliberately and in both directions. The file may already be gone
+ * (the OS cleared the cache, or the same URI settled twice through a path we
+ * have not thought of), and a draft the user just saved must not surface an
+ * error because a temporary file could not be deleted. There is nothing here
+ * the user could act on.
+ */
+function releaseImage(imageUri: string): void {
+  try {
+    const file = new File(imageUri);
+    if (file.exists) file.delete();
+  } catch {
+    // Nothing to do and nothing worth saying: see above.
+  }
+}
+
+export const scanQueue = createScanQueue({ run, onRelease: releaseImage });

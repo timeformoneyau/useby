@@ -55,3 +55,34 @@ export const proxySecret: string | null =
 export function isScanConfigured(): boolean {
   return proxySecret !== null;
 }
+
+/**
+ * Wake the proxy up before there is a photo waiting on it.
+ *
+ * The scan endpoint is a serverless function: the first request of a session
+ * pays for starting a Node runtime that has since been reclaimed, and that cost
+ * lands on the first thing someone photographs. Opening the camera is a good
+ * predictor that a scan is seconds away, so the wait can be spent then instead.
+ *
+ * Fire and forget in the strictest sense — nothing is awaited, nothing is
+ * reported, and every failure is swallowed. It is an optimisation with no
+ * correctness role whatsoever: if it fails, or the runtime goes cold again
+ * before the shutter, the scan behaves exactly as it does today.
+ *
+ * A `GET` because the endpoint already answers one (with a `405`, which is the
+ * point — it is the cheapest thing that loads the route). Note that the proxy
+ * logs that `405` as an error line, so these appear in its log; making the
+ * endpoint answer a warm ping quietly is a proxy-side follow-up.
+ *
+ * Deliberately not sent when scanning is unconfigured: there would be nothing
+ * to warm up for.
+ */
+export function warmProxy(): void {
+  if (!isScanConfigured()) return;
+
+  try {
+    void fetch(parseExpiryUrl, { method: 'GET' }).catch(() => {});
+  } catch {
+    // Some runtimes throw synchronously on a malformed URL. Same answer.
+  }
+}

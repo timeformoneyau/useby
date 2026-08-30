@@ -70,6 +70,28 @@ export interface PendingScan {
   /** `Date.now()` at the shutter. Orders the strip the way they were photographed. */
   shutterAt: number;
   /**
+   * `Date.now()` when the scan reached a terminal status. Absent until then.
+   *
+   * Deliberately not the same ordering as `shutterAt`. Requests finish out of
+   * order routinely, so "the one that just came back" is a different question
+   * from "the one photographed most recently" — and the camera card asks the
+   * first. Without this the card would show a stale result every time an
+   * earlier scan overtook a later one.
+   */
+  settledAt?: number;
+  /**
+   * The resized JPEG on disk — the exact image the model was given.
+   *
+   * Held for the whole life of the draft rather than released with the upload,
+   * because it is what makes a draft identifiable. "Which of these three packs
+   * of mince is this?" is unanswerable from the words `Beef mince` and trivial
+   * from a thumbnail. Released when the draft is saved, discarded or replaced.
+   *
+   * A cache-directory URI, so the OS may reclaim it under storage pressure. A
+   * missing file degrades to a card with no thumbnail, never to a broken draft.
+   */
+  imageUri?: string;
+  /**
    * The editor's starting state, once there is one.
    *
    * Present for `ready` and normally for `failed` too — a failure still
@@ -85,6 +107,14 @@ export interface ScanJob {
   scanId: string;
   /** Released the moment the request settles — see `settle`. */
   imageBase64: string;
+  /**
+   * Where that image lives on disk. Outlives the request; see `PendingScan`.
+   *
+   * Separate from `imageBase64` on purpose: the string is the upload and is
+   * dropped as soon as it has been sent, while the file is the draft's identity
+   * and is kept until the draft goes.
+   */
+  imageUri: string;
   capture: CaptureTimings;
 }
 
@@ -110,6 +140,24 @@ export type ScanRunner = (
 export interface ScanQueue {
   /** Enqueue a captured photo. Returns immediately; the camera never waits. */
   add(job: ScanJob): void;
+  /**
+   * Retake: this photo belongs to an existing draft and supersedes it.
+   *
+   * One draft in, one draft out — which is the whole of the bug this fixes.
+   * Retake used to leave the original in place while the new photo enqueued
+   * itself under a fresh id, so one physical pack became two rows.
+   *
+   * The new scan carries its own `scanId`, because it is a different photograph
+   * and the id is what ties a request to its two log lines; reusing the old one
+   * would make two different photos indistinguishable in the logs. What it
+   * inherits is the original's `shutterAt`, so the card stays where it was in
+   * the strip instead of jumping to the end for having been retaken.
+   *
+   * Falls back to a plain `add` when the previous draft is already gone — saved
+   * or discarded from another screen while the camera was open. A retake should
+   * never be lost because the thing it was replacing disappeared first.
+   */
+  replace(previousScanId: string, job: ScanJob): void;
   /** Forget a scan — saved, or discarded by hand. Idempotent. */
   remove(scanId: string): void;
   get(scanId: string): PendingScan | undefined;
@@ -128,9 +176,28 @@ export interface ScanCounts {
 
 export function createScanQueue(options: {
   run: ScanRunner;
+  /**
+   * Called with a retained image URI once nothing refers to it any more.
+   *
+   * Injected for the same reason `run` is: this file has no value imports, so
+   * the offline suite can load it under Node's type stripping. Deleting a file
+   * is the wiring's job, not the state machine's — and routing every release
+   * through one hook is what stops a future caller forgetting one and leaving a
+   * photograph behind in the cache directory.
+   */
+  onRelease?: (imageUri: string) => void;
+  /**
+   * The clock, so `settledAt` is orderable under test.
+   *
+   * Three results can land inside one millisecond, and `Date.now()` then makes
+   * "which came back last" a coin toss — fine on a device, useless in a test
+   * that has to state the answer. Injected for the same reason `run` is, and
+   * production simply takes the default.
+   */
+  now?: () => number;
   cap?: number;
 }): ScanQueue {
-  const { run, cap = MAX_ACTIVE } = options;
+  const { run, onRelease, now = Date.now, cap = MAX_ACTIVE } = options;
 
   const scans = new Map<string, PendingScan>();
   /**
@@ -187,7 +254,7 @@ export function createScanQueue(options: {
     job: ScanJob,
     queuedAt: number,
   ): Promise<void> {
-    const queuedMs = Math.max(0, Date.now() - queuedAt);
+    const queuedMs = Math.max(0, now() - queuedAt);
     let outcome: ScanOutcome | null = null;
 
     try {
@@ -210,6 +277,25 @@ export function createScanQueue(options: {
     }
   }
 
+  /**
+   * Record a job and start it if there is room. Never notifies — see `pump`.
+   *
+   * `shutterAt` is a parameter rather than read off the job because a retake
+   * inherits the original's, which is the only thing keeping its card from
+   * jumping to the end of the strip.
+   */
+  function enqueue(job: ScanJob, shutterAt: number): void {
+    scans.set(job.scanId, {
+      scanId: job.scanId,
+      status: 'queued',
+      shutterAt,
+      imageUri: job.imageUri,
+    });
+    jobs.set(job.scanId, { job, queuedAt: now() });
+    waiting.push(job.scanId);
+    pump();
+  }
+
   function settle(scanId: string, outcome: ScanOutcome | null): void {
     const scan = scans.get(scanId);
 
@@ -222,8 +308,24 @@ export function createScanQueue(options: {
     scans.set(scanId, {
       ...scan,
       status: outcome?.ok ? 'ready' : 'failed',
+      settledAt: now(),
       prefill: outcome?.prefill,
     });
+  }
+
+  /**
+   * Drop a scan and hand back whatever file it was holding. Not published.
+   *
+   * The single place a retained image stops being referenced, so it is the
+   * single place the file can be deleted. `remove` and `replace` both go
+   * through it rather than each remembering to release.
+   */
+  function forget(scanId: string): boolean {
+    const scan = scans.get(scanId);
+    const had = scans.delete(scanId);
+    jobs.delete(scanId);
+    if (scan?.imageUri && onRelease) onRelease(scan.imageUri);
+    return had;
   }
 
   return {
@@ -233,24 +335,30 @@ export function createScanQueue(options: {
       // failure it prevents is a duplicate item in someone's list.
       if (scans.has(job.scanId)) return;
 
-      scans.set(job.scanId, {
-        scanId: job.scanId,
-        status: 'queued',
-        shutterAt: job.capture.shutterAt,
-      });
-      jobs.set(job.scanId, { job, queuedAt: Date.now() });
-      waiting.push(job.scanId);
+      enqueue(job, job.capture.shutterAt);
+      publish();
+    },
 
-      pump();
+    replace(previousScanId, job) {
+      // Inherited before the old record goes, so the retake keeps its place in
+      // the strip. Falling back to this shutter covers the draft that was
+      // already saved or discarded from another screen — see the interface note.
+      const previous = scans.get(previousScanId);
+      const shutterAt = previous?.shutterAt ?? job.capture.shutterAt;
+
+      // Order matters. The old record goes first so that its slot, its file and
+      // any late result belonging to it are all released before the new one
+      // takes its place — and `settle` already drops a result whose scan has
+      // gone, so an in-flight original cannot resurrect itself here.
+      forget(previousScanId);
+      enqueue(job, shutterAt);
       publish();
     },
 
     remove(scanId) {
       // `waiting` is left alone; `pump` skips ids with no job. Splicing it here
       // would be the same outcome with an extra way to get the indices wrong.
-      const had = scans.delete(scanId);
-      jobs.delete(scanId);
-      if (had) publish();
+      if (forget(scanId)) publish();
     },
 
     get: (scanId) => scans.get(scanId),
@@ -337,4 +445,99 @@ export function countsLine(counts: ScanCounts): string | null {
   if (counts.checking > 0) parts.push(`${counts.checking} checking`);
   if (counts.toReview > 0) parts.push(`${counts.toReview} to review`);
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/** True once a scan has an answer to show, whichever way it went. */
+export function isSettled(scan: PendingScan): boolean {
+  return scan.status === 'ready' || scan.status === 'failed';
+}
+
+/**
+ * The one settled scan the camera should be showing, if any.
+ *
+ * Deliberately one card and not a list. The camera's job is to photograph the
+ * next thing; a growing stack of results there would compete with the shutter
+ * and eventually become the screen. Home already holds every outstanding draft,
+ * and that is where a list belongs.
+ *
+ * Ordered by `settledAt`, not `shutterAt`. Three requests in flight finish in
+ * whatever order the network and the model decide, and the card is answering
+ * "what just came back" — ordering by shutter would show the second item's
+ * result while the third one's was the news.
+ *
+ * `dismissed` is ids the user has waved away on this screen. Purely a view
+ * concern: the draft itself is untouched and still on Home, so dismissing costs
+ * nothing and the card needs no confirmation. Kept as a parameter rather than
+ * as queue state because it is about what one screen is showing, not about what
+ * the scan *is*.
+ *
+ * `since` is when the camera opened. The card is for results arriving *while
+ * you watch* — greeting someone with the answer to something they photographed
+ * five minutes ago, the moment they open the camera to shoot something else,
+ * would be a stale interruption rather than news. Drafts from earlier are not
+ * lost by this: they are on Home, which is where a list of outstanding work
+ * belongs. A scan started on an earlier visit that settles during this one is
+ * still shown, which is correct — it did just come back.
+ */
+export function latestSettled(
+  scans: readonly PendingScan[],
+  dismissed: ReadonlySet<string>,
+  since = 0,
+): PendingScan | null {
+  let best: PendingScan | null = null;
+
+  for (const scan of scans) {
+    if (!isSettled(scan) || dismissed.has(scan.scanId)) continue;
+    const settledAt = scan.settledAt ?? 0;
+    if (settledAt < since) continue;
+    if (best === null || settledAt > (best.settledAt ?? 0)) best = scan;
+  }
+
+  return best;
+}
+
+/**
+ * How a settled scan reads on the camera card.
+ *
+ * The point of the card is recognition, not review: `Beef mince · 3 Sep` beside
+ * the photograph, while the pack is still in reach. So the item leads and the
+ * date follows it on one line, which is the opposite emphasis from the editor
+ * and deliberately so.
+ *
+ * `formatDate` is injected rather than imported. This module has no value
+ * imports — that is what lets the offline suite load it under Node's type
+ * stripping — and date formatting lives in `presentation.ts`, which pulls in
+ * `date-fns`. Passing the formatter keeps the composition here where it can be
+ * tested against exact strings, and keeps the import out.
+ *
+ * Branch order repeats the rule `pendingSummary` and `reviewCopy` already
+ * follow: a scan that read *neither* field is the same situation as a failure
+ * and has to be tested before the single-field cases, each of which promises
+ * the other field came back.
+ */
+export function cameraResultLine(
+  scan: PendingScan,
+  formatDate: (iso: string) => string,
+): { title: string; detail: string; tone: 'ready' | 'attention' } {
+  const prefill = scan.prefill;
+  const name = prefill?.name ?? '';
+  const date = prefill?.expiryDate ?? null;
+
+  if (scan.status === 'failed' || !prefill || (name.length === 0 && date === null)) {
+    return {
+      title: "Couldn't read that one",
+      detail: 'Tap to type it in',
+      tone: 'attention',
+    };
+  }
+
+  if (name.length === 0) {
+    return { title: formatDate(date as string), detail: 'Tap to name it', tone: 'attention' };
+  }
+
+  if (date === null) {
+    return { title: name, detail: 'Tap to add the date', tone: 'attention' };
+  }
+
+  return { title: name, detail: formatDate(date), tone: 'ready' };
 }

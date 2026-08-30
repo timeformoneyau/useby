@@ -3,6 +3,7 @@ import {
   AccessibilityInfo,
   Animated,
   Easing,
+  Image,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -114,6 +115,23 @@ function PendingRow({
         <View style={[styles.dot, failed ? styles.dotFailed : styles.dotReady]} />
       )}
 
+      {/*
+        The photograph, and it is load-bearing rather than decorative. Three
+        packs of mince read as three identical rows saying `Beef mince`; the
+        pictures of the actual packs tell them apart at a glance. That was the
+        specific failure the real-device test surfaced.
+
+        Shown for a scan still in flight too — the photo exists from the shutter,
+        and seeing which item is being read is half of knowing the app kept up.
+        A missing file (the OS may reclaim the cache) degrades to a plain block:
+        the row still works and the draft is still openable.
+      */}
+      {scan.imageUri ? (
+        <Image source={{ uri: scan.imageUri }} style={styles.thumb} />
+      ) : (
+        <View style={[styles.thumb, styles.thumbMissing]} />
+      )}
+
       <View style={styles.rowText}>
         <Text style={[styles.rowTitle, waiting && styles.rowTitleWaiting]} numberOfLines={1}>
           {title}
@@ -189,6 +207,7 @@ function PulseDot({ reduceMotion }: { reduceMotion: boolean }) {
 }
 
 const DOT = 8;
+const THUMB = 40;
 
 const styles = StyleSheet.create({
   /* No horizontal padding: inside the list this renders within a content
@@ -226,9 +245,9 @@ const styles = StyleSheet.create({
     minHeight: hit.minTarget,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 11,
     paddingHorizontal: 15,
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
   rowDivided: { borderBottomWidth: 1, borderBottomColor: colours.divider },
 
@@ -239,6 +258,14 @@ const styles = StyleSheet.create({
   // one thing in this app — today or already past — and a scan that failed to
   // read is not a date at all.
   dotFailed: { backgroundColor: colours.clayBorder },
+
+  thumb: {
+    width: THUMB,
+    height: THUMB,
+    borderRadius: 7,
+    backgroundColor: colours.divider,
+  },
+  thumbMissing: { opacity: 0.5 },
 
   rowText: { flex: 1, gap: 2 },
   rowTitle: {

@@ -112,6 +112,25 @@ export default function AddItemScreen() {
    */
   const savingRef = useRef(false);
 
+  /**
+   * Leave the editor and go back to whatever opened it.
+   *
+   * Was `navigate('Main')`, which was correct while Home was the only way in.
+   * The camera now opens this editor too — tap the result card that appears a
+   * couple of seconds after the shutter — and from there `navigate('Main')`
+   * would tear the camera off the stack and land someone on Home in the middle
+   * of unpacking a bag. Going back instead returns to Home from Home and to the
+   * camera from the camera, so neither caller is surprised and the scanning
+   * rhythm survives a save.
+   *
+   * `Main` is the navigator's first screen, so there is always somewhere to go
+   * back to; the fallback is belt for a stack shape that does not exist today.
+   */
+  function dismiss() {
+    if (navigation.canGoBack()) navigation.goBack();
+    else navigation.navigate('Main');
+  }
+
   async function handleSave() {
     const trimmed = name.trim();
     if (!trimmed || savingRef.current) return;
@@ -122,7 +141,7 @@ export default function AddItemScreen() {
       // Retire the draft only once the item is genuinely stored. Reversed, a
       // failed write would take the scan with it and leave nothing behind.
       if (scanId) scanQueue.remove(scanId);
-      navigation.navigate('Main');
+      dismiss();
     } catch {
       // Let them try again rather than stranding a filled-in form behind a
       // permanently disabled button.
@@ -140,7 +159,7 @@ export default function AddItemScreen() {
    */
   function handleDiscard() {
     if (scanId) scanQueue.remove(scanId);
-    navigation.navigate('Main');
+    dismiss();
   }
 
   const canSave = name.trim().length > 0;
@@ -161,22 +180,26 @@ export default function AddItemScreen() {
             packet would be the worst possible reading of "review before save".
             Discard, below, is the way to actually get rid of one.
           */}
-          <TouchableOpacity
-            style={styles.topBtn}
-            onPress={() => navigation.navigate('Main')}
-          >
+          <TouchableOpacity style={styles.topBtn} onPress={dismiss}>
             <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
           {/*
-            Retake leaves the draft alone too. Discarding it here would be
-            reasonable right up until someone opens the camera, changes their
-            mind and backs out — at which point the original scan would be gone
-            and nothing would have replaced it.
+            Retake names the draft it is for, and that name is the whole fix for
+            the duplicate. Before this it opened a bare camera, the next shutter
+            minted a new id and enqueued alongside the original, and one physical
+            pack became two rows — which is exactly what the device test found.
+            Now the camera is told what this photo is replacing.
+
+            The draft is still left in place here, and deliberately: discarding
+            it at this tap would be reasonable right up until someone opens the
+            camera, changes their mind and backs out, at which point the original
+            would be gone and nothing would have replaced it. It is retired by
+            the replacement, not by the intention to make one.
           */}
           {cameFromPhoto && (
             <TouchableOpacity
               style={styles.topBtn}
-              onPress={() => navigation.replace('Capture')}
+              onPress={() => navigation.replace('Capture', { replacing: scanId })}
             >
               <Text style={styles.retakeText}>Retake</Text>
             </TouchableOpacity>

@@ -19,8 +19,11 @@ import assert from 'node:assert/strict';
 
 import {
   MAX_ACTIVE,
+  cameraResultLine,
   countsLine,
   createScanQueue,
+  isSettled,
+  latestSettled,
   pendingSummary,
 } from '../src/domain/scan/pending.ts';
 
@@ -37,8 +40,34 @@ const prefill = (over = {}) => ({
 const job = (scanId, shutterAt = 0) => ({
   scanId,
   imageBase64: `payload-${scanId}`,
+  imageUri: `file:///cache/${scanId}.jpg`,
   capture: { shutterAt, captureMs: 10, resizeMs: 20 },
 });
+
+/**
+ * A queue that records every image it releases.
+ *
+ * The release hook is how a retained photo gets deleted from the cache
+ * directory, and "deleted exactly once, and only when nothing refers to it any
+ * more" is not observable on a device — a file that is never cleaned up looks
+ * like nothing at all until storage fills up months later. So it is asserted
+ * here instead.
+ */
+function queueWithReleases(run, options = {}) {
+  const released = [];
+  // A counting clock, not the wall one. Several results can land inside the same
+  // millisecond, and `settledAt` then cannot say which came back last — which is
+  // the exact question the camera card asks. Ticking once per read makes the
+  // order something these tests state rather than race for.
+  let tick = 0;
+  const queue = createScanQueue({
+    run,
+    onRelease: (uri) => released.push(uri),
+    now: () => (tick += 1),
+    ...options,
+  });
+  return { queue, released, at: () => tick };
+}
 
 /**
  * A runner whose every scan is resolved by hand.
@@ -412,4 +441,345 @@ test('the camera line counts, and says nothing when there is nothing to say', ()
   assert.equal(countsLine({ checking: 2, toReview: 0 }), '2 checking');
   assert.equal(countsLine({ checking: 0, toReview: 3 }), '3 to review');
   assert.equal(countsLine({ checking: 1, toReview: 2 }), '1 checking · 2 to review');
+});
+
+/* -------------------------------------------------------------------------
+ * Retake — one physical pack must stay one draft.
+ *
+ * The bug the device test found: Retake opened a bare camera, the next shutter
+ * minted a fresh id and enqueued alongside the original, and the user was left
+ * holding one pack of mince while looking at two rows for it. Every assertion
+ * below is a way that could come back.
+ * ---------------------------------------------------------------------- */
+
+test('a retake replaces its draft instead of adding a second one', async () => {
+  const runner = manualRunner();
+  const { queue } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  await runner.finish('a', ok({ name: 'Beef mince' }));
+
+  queue.replace('a', job('a-retake', 5000));
+
+  assert.equal(queue.snapshot().length, 1, 'one pack, one draft');
+  assert.equal(queue.snapshot()[0].scanId, 'a-retake');
+  assert.equal(queue.get('a'), undefined, 'the original is gone');
+});
+
+test('a retake keeps its place in the strip rather than jumping to the end', async () => {
+  const runner = manualRunner();
+  const { queue } = queueWithReleases(runner.run);
+
+  queue.add(job('first', 1000));
+  queue.add(job('second', 2000));
+  queue.add(job('third', 3000));
+  await runner.finish('first', ok({ name: 'Mince' }));
+
+  // Retaken much later than everything else. It is still the first thing that
+  // came out of the bag, and it is still sitting first on the bench.
+  queue.replace('first', job('first-retake', 9000));
+
+  assert.deepEqual(
+    queue.snapshot().map((s) => s.scanId),
+    ['first-retake', 'second', 'third'],
+  );
+  assert.equal(queue.get('first-retake').shutterAt, 1000, 'inherits the original shutter');
+});
+
+test('a retake releases the photo it superseded, and holds the new one', async () => {
+  const runner = manualRunner();
+  const { queue, released } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  await runner.finish('a', ok());
+  queue.replace('a', job('a-retake', 2000));
+
+  assert.deepEqual(released, ['file:///cache/a.jpg'], 'the replaced photo, once');
+  assert.equal(queue.get('a-retake').imageUri, 'file:///cache/a-retake.jpg');
+});
+
+test('a late result for a retaken scan cannot resurrect it', async () => {
+  const runner = manualRunner();
+  const { queue } = queueWithReleases(runner.run);
+
+  // Retaken while the original was still in flight — impatient, but reachable.
+  queue.add(job('a', 1000));
+  queue.replace('a', job('a-retake', 2000));
+
+  await runner.finish('a', ok({ name: 'Stale answer' }));
+
+  assert.equal(queue.snapshot().length, 1);
+  assert.equal(queue.snapshot()[0].scanId, 'a-retake');
+  assert.equal(queue.get('a'), undefined);
+});
+
+test('a retake of a draft that is already gone still keeps the photo', async () => {
+  const runner = manualRunner();
+  const { queue, released } = queueWithReleases(runner.run);
+
+  // Saved or discarded from Home while the camera was open. The retake must not
+  // be swallowed just because the thing it was replacing vanished first.
+  queue.replace('never-existed', job('a-retake', 4000));
+
+  assert.equal(queue.snapshot().length, 1);
+  assert.equal(queue.snapshot()[0].scanId, 'a-retake');
+  assert.equal(queue.get('a-retake').shutterAt, 4000, 'falls back to its own shutter');
+  assert.deepEqual(released, [], 'nothing to release');
+});
+
+test('a retake frees the slot the original was holding', async () => {
+  const runner = manualRunner();
+  const { queue } = queueWithReleases(runner.run);
+
+  for (let i = 0; i < MAX_ACTIVE; i += 1) queue.add(job(`s${i}`, i));
+  queue.add(job('waiting', 99));
+  assert.equal(runner.calls.length, MAX_ACTIVE, 'capped');
+
+  // Replacing an in-flight scan must not strand its concurrency slot: the
+  // request is abandoned, so the slot has to come back when it settles.
+  queue.replace('s0', job('s0-retake', 100));
+  await runner.finish('s0', ok());
+
+  assert.equal(runner.active, MAX_ACTIVE, 'still saturated, not stalled');
+  const ids = queue.snapshot().map((s) => s.scanId);
+  assert.ok(ids.includes('s0-retake'));
+  assert.ok(ids.includes('waiting'));
+  assert.ok(!ids.includes('s0'));
+});
+
+/* -------------------------------------------------------------------------
+ * Retained image lifetime.
+ * ---------------------------------------------------------------------- */
+
+test('a draft holds its photo across settling, so the thumbnail survives', async () => {
+  const runner = manualRunner();
+  const { queue, released } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  assert.equal(queue.get('a').imageUri, 'file:///cache/a.jpg', 'held from the shutter');
+
+  await runner.finish('a', ok());
+
+  assert.equal(
+    queue.get('a').imageUri,
+    'file:///cache/a.jpg',
+    'still held after the request settled — the upload goes, the file stays',
+  );
+  assert.deepEqual(released, [], 'settling is not a release');
+});
+
+test('saving or discarding a draft releases exactly its own photo', async () => {
+  const runner = manualRunner();
+  const { queue, released } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  queue.add(job('b', 2000));
+  await runner.finish('a', ok());
+  await runner.finish('b', ok());
+
+  queue.remove('a');
+
+  assert.deepEqual(released, ['file:///cache/a.jpg']);
+  assert.equal(queue.get('b').imageUri, 'file:///cache/b.jpg', 'the other is untouched');
+});
+
+test('removing the same draft twice does not release its photo twice', async () => {
+  const runner = manualRunner();
+  const { queue, released } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  await runner.finish('a', ok());
+
+  queue.remove('a');
+  queue.remove('a');
+
+  assert.deepEqual(released, ['file:///cache/a.jpg'], 'once, not twice');
+});
+
+test('discarding a scan still in flight releases its photo', () => {
+  const runner = manualRunner();
+  const { queue, released } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  queue.remove('a');
+
+  assert.deepEqual(released, ['file:///cache/a.jpg']);
+});
+
+test('a queue with no release hook still works', async () => {
+  // The hook is optional, and the offline suite is not the only caller.
+  const runner = manualRunner();
+  const queue = createScanQueue({ run: runner.run });
+
+  queue.add(job('a', 1000));
+  await runner.finish('a', ok());
+  queue.remove('a');
+
+  assert.equal(queue.snapshot().length, 0);
+});
+
+/* -------------------------------------------------------------------------
+ * What the camera shows — ordered by when a scan came back, not when it was
+ * photographed. Requests finish out of order routinely, and this is the whole
+ * reason `settledAt` exists.
+ * ---------------------------------------------------------------------- */
+
+test('the camera shows the scan that came back most recently, not the newest photo', async () => {
+  const runner = manualRunner();
+  const { queue } = queueWithReleases(runner.run);
+
+  queue.add(job('first', 1000));
+  queue.add(job('second', 2000));
+
+  // The later photograph answers first. That is the news, and it is what should
+  // be on screen — ordering by shutter would show the first item's result.
+  await runner.finish('second', ok({ name: 'Yoghurt' }));
+  await runner.finish('first', ok({ name: 'Mince' }));
+
+  const showing = latestSettled(queue.snapshot(), new Set());
+  assert.equal(showing.scanId, 'first', 'the one that just settled');
+});
+
+test('the camera shows nothing until something has settled', () => {
+  const runner = manualRunner();
+  const { queue } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+
+  assert.equal(latestSettled(queue.snapshot(), new Set()), null);
+  assert.equal(latestSettled([], new Set()), null);
+});
+
+test('a dismissed result steps aside for the one behind it', async () => {
+  const runner = manualRunner();
+  const { queue } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  queue.add(job('b', 2000));
+  await runner.finish('a', ok({ name: 'Mince' }));
+  await runner.finish('b', ok({ name: 'Yoghurt' }));
+
+  assert.equal(latestSettled(queue.snapshot(), new Set()).scanId, 'b');
+  assert.equal(latestSettled(queue.snapshot(), new Set(['b'])).scanId, 'a');
+  assert.equal(latestSettled(queue.snapshot(), new Set(['a', 'b'])), null);
+});
+
+test('dismissing a result is not discarding it', async () => {
+  const runner = manualRunner();
+  const { queue, released } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  await runner.finish('a', ok());
+
+  // Dismissal is a view concern and never touches the queue. If this ever
+  // starts removing the draft, waving a card away on the camera would silently
+  // throw a photograph out.
+  latestSettled(queue.snapshot(), new Set(['a']));
+
+  assert.equal(queue.snapshot().length, 1, 'the draft is untouched');
+  assert.deepEqual(released, [], 'and so is its photo');
+});
+
+test('a failed scan is settled, and is shown', async () => {
+  const runner = manualRunner();
+  const { queue } = queueWithReleases(runner.run);
+
+  queue.add(job('a', 1000));
+  await runner.finish('a', failed());
+
+  assert.equal(isSettled(queue.get('a')), true);
+  assert.equal(latestSettled(queue.snapshot(), new Set()).scanId, 'a');
+});
+
+/* -------------------------------------------------------------------------
+ * The camera card's copy. Same branch-order rule as `pendingSummary` and
+ * `reviewCopy`: the empty read is tested before the single-field cases.
+ * ---------------------------------------------------------------------- */
+
+/** A stub formatter, so the composition is asserted rather than date-fns. */
+const asDate = (iso) => `<${iso}>`;
+
+const settled = (status, prefillOver) => ({
+  scanId: 'x',
+  status,
+  shutterAt: 0,
+  settledAt: 1,
+  prefill: prefillOver === null ? undefined : prefill(prefillOver),
+});
+
+test('a clean read reads as the item and its date', () => {
+  const line = cameraResultLine(
+    settled('ready', { name: 'Beef mince', expiryDate: '2026-09-03' }),
+    asDate,
+  );
+  assert.deepEqual(line, {
+    title: 'Beef mince',
+    detail: '<2026-09-03>',
+    tone: 'ready',
+  });
+});
+
+test('an empty read is not dressed up as a partial one', () => {
+  // The branch that has now been got wrong twice elsewhere. A scan that read
+  // neither field must not render as "Tap to add the date" against no item.
+  const line = cameraResultLine(
+    settled('ready', { name: '', expiryDate: null }),
+    asDate,
+  );
+  assert.equal(line.title, "Couldn't read that one");
+  assert.equal(line.tone, 'attention');
+});
+
+test('a partial read says which half is missing', () => {
+  const noDate = cameraResultLine(settled('ready', { expiryDate: null }), asDate);
+  assert.deepEqual(noDate, {
+    title: 'Milk',
+    detail: 'Tap to add the date',
+    tone: 'attention',
+  });
+
+  const noName = cameraResultLine(settled('ready', { name: '' }), asDate);
+  assert.deepEqual(noName, {
+    title: '<2026-08-30>',
+    detail: 'Tap to name it',
+    tone: 'attention',
+  });
+});
+
+test('a failure is recoverable rather than final', () => {
+  const line = cameraResultLine(settled('failed', { name: '', expiryDate: null }), asDate);
+  assert.equal(line.detail, 'Tap to type it in');
+
+  // Even with no prefill at all — the runner threw — there is something to tap.
+  const bare = cameraResultLine(settled('failed', null), asDate);
+  assert.equal(bare.title, "Couldn't read that one");
+  assert.equal(bare.tone, 'attention');
+});
+
+test('the camera card never invents a date it was not given', () => {
+  // A formatter that would be obvious in the output if it were ever called on
+  // a scan with no date.
+  const loud = () => 'FORMATTED';
+  const line = cameraResultLine(settled('ready', { expiryDate: null }), loud);
+  assert.ok(!line.title.includes('FORMATTED'));
+  assert.ok(!line.detail.includes('FORMATTED'));
+});
+
+test('the camera card shows this visit, not the backlog', async () => {
+  const runner = manualRunner();
+  const { queue, at } = queueWithReleases(runner.run);
+
+  // Settled before the camera was opened: still a draft, still on Home, but not
+  // news — greeting someone with it as they open the camera to shoot the next
+  // thing would be a stale interruption.
+  queue.add(job('earlier', 1000));
+  await runner.finish('earlier', ok({ name: 'Yesterday' }));
+
+  const openedAt = at() + 1;
+  assert.equal(latestSettled(queue.snapshot(), new Set(), openedAt), null);
+
+  // One started earlier but landing during this visit *is* news.
+  queue.add(job('now', 2000));
+  await runner.finish('now', ok({ name: 'Mince' }));
+  assert.equal(latestSettled(queue.snapshot(), new Set(), openedAt).scanId, 'now');
 });

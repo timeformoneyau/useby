@@ -121,5 +121,15 @@ export type RootStackParamList = {
    * retired mid-edit cannot empty the form underneath the user.
    */
   Add: { prefill?: AddScreenPrefill; scanId?: string } | undefined;
-  Capture: undefined;
+  /**
+   * Camera.
+   *
+   * `replacing` is a retake: the next photo taken belongs to that existing
+   * pending draft and supersedes it, rather than starting a new one. Absent for
+   * an ordinary trip to the camera, which is what keeps normal capture
+   * unchanged. It is consumed by the first shutter press and ignored after
+   * that — a retake replaces one draft, and the shots that follow are new
+   * items like any others.
+   */
+  Capture: { replacing?: string } | undefined;
 };
