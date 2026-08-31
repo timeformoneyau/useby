@@ -16,7 +16,7 @@ import { RootStackParamList } from '../types';
 import { DerivedItem } from '../domain/items/types';
 import { getDerivedItem, removeItem } from '../domain/items/service';
 import { photoStore } from '../domain/items/photoStore';
-import { heroText, longDate, typeWord } from '../domain/items/presentation';
+import { dateWord, heroText, longDate } from '../domain/items/presentation';
 import { colours, fonts, hit, radius } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'ItemDetail'>;
@@ -32,8 +32,8 @@ type DetailRoute = RouteProp<RootStackParamList, 'ItemDetail'>;
  * route to removing anything.
  *
  * The order follows Home's hierarchy so the two screens read as the same
- * product: time remaining as the hero, then the item, then what the pack
- * actually said and the exact date, then the photograph, then the actions.
+ * product: time remaining as the hero, then the item, then its Use By date in
+ * full, then the photograph, then the actions.
  *
  * **The photograph is for identification, not decoration.** It sits below the
  * text at a modest fixed height, and an item without one renders no block at
@@ -41,10 +41,12 @@ type DetailRoute = RouteProp<RootStackParamList, 'ItemDetail'>;
  * eye to an absence that does not matter, and most items legitimately have none:
  * manual adds never do, and neither does anything saved before photos existed.
  *
- * Deliberately read-only. Editing a saved name or date needs an update path in
- * the service that does not exist yet, and inventing half of one here would
- * have to be undone. Both actions route through `service.removeItem`, which is
- * the single removal path and therefore the single place photo cleanup can hook.
+ * The read view. Editing lives on its own screen behind the Edit action, so
+ * this one stays a thing you look at rather than a form — and so a stray tap
+ * while checking a date cannot change it.
+ *
+ * Both removal actions route through `service.removeItem`, which is the single
+ * removal path and therefore the single place photo cleanup can hook.
  */
 export default function ItemDetailScreen() {
   const navigation = useNavigation<Nav>();
@@ -159,6 +161,20 @@ export default function ItemDetailScreen() {
         <TouchableOpacity style={styles.topBtn} onPress={() => navigation.goBack()}>
           <Text style={styles.backText}>Back</Text>
         </TouchableOpacity>
+        {/*
+          The recovery path, and the reason it had to exist: until now a mistake
+          that reached storage could only be deleted, not corrected. Opposite
+          corner from Back, matching Retake's placement on the scan editor, so
+          the two screens put "change this" in the same place.
+        */}
+        <TouchableOpacity
+          style={styles.topBtn}
+          onPress={() => navigation.navigate('EditItem', { itemId: item.id })}
+          accessibilityRole="button"
+          accessibilityLabel={`Edit ${item.name}`}
+        >
+          <Text style={styles.editText}>Edit</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -171,12 +187,11 @@ export default function ItemDetailScreen() {
 
         <Text style={styles.name}>{item.name}</Text>
 
-        {/* What the pack said, then the date it said it. Kept in that order
-            because the wording is the qualifier: "Best Before · 3 Sep 2026"
-            makes a different promise from "Use By · 3 Sep 2026", and the app is
-            careful everywhere not to upgrade one into the other. */}
+        {/* One concept, always Use By. What the packaging literally printed is
+            still on the record and still matters internally — it just is not a
+            second date idea for the reader to reconcile. See `dateWord`. */}
         <Text style={styles.dateLine}>
-          {typeWord(item.dateType, isPast)} · {longDate(dueDate)}
+          {dateWord(isPast)} · {longDate(dueDate)}
         </Text>
 
         {showPhoto && (
@@ -239,13 +254,20 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
-  topRow: { paddingHorizontal: 14, paddingVertical: 8 },
-  topBtn: { paddingVertical: 12, paddingHorizontal: 10, alignSelf: 'flex-start' },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  topBtn: { paddingVertical: 12, paddingHorizontal: 10 },
   backText: {
     fontSize: 15,
     fontFamily: fonts.regular,
     color: colours.secondaryAction,
   },
+  editText: { fontSize: 15, fontFamily: fonts.medium, color: colours.sage },
 
   content: { paddingHorizontal: 24, paddingTop: 8, gap: 6 },
 

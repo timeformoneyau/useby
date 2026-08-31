@@ -327,7 +327,7 @@ export function reviewCopy(
   hasDate: boolean,
 ): { title: string; note: string } {
   if (source === 'manual') {
-    return { title: 'Add an item', note: 'The same three fields, nothing filled in.' };
+    return { title: 'Add an item', note: 'The same two fields, nothing filled in.' };
   }
   if (hasNotice || (!hasName && !hasDate)) {
     return {

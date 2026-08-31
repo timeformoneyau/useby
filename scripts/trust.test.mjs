@@ -449,3 +449,56 @@ test('the prefill still asks for a check exactly as it did before', () => {
   assert.equal(prefill.needsNameCheck, true);
   assert.equal(prefill.needsDateCheck, false);
 });
+
+/* ---------------------------------------------------------------------------
+ * Regression: the consumer date-language change must not reach in here.
+ *
+ * The product now presents a single "Use By" concept and the presentation layer
+ * no longer takes a DateType at all. None of that is true of this module. The
+ * gate still reasons about what the packaging literally said, because that is
+ * evidence — and evidence is exactly the thing a presentation decision has no
+ * business simplifying.
+ * ------------------------------------------------------------------------ */
+
+test('the gate still tells the packaging labels apart', () => {
+  const useBy = judge({ dateLabelText: 'USE BY', dateType: 'use_by' });
+  assert.deepEqual(useBy.advisory, [], 'wording and classification agree');
+  assert.equal(useBy.derived.dateType, 'use_by');
+
+  const bestBefore = judge({ dateLabelText: 'BEST BEFORE', dateType: 'best_before' });
+  assert.deepEqual(bestBefore.advisory, []);
+  assert.equal(bestBefore.derived.dateType, 'best_before', 'still recorded as what it was');
+});
+
+test('the date-type advisory signals still fire', () => {
+  // `DATE_TYPE_UNKNOWN` and `DATE_TYPE_MISMATCH` are part of the evidence the
+  // collection run exists to gather. Collapsing the user-facing wording must
+  // not quietly retire them.
+  assert.ok(judge({ dateLabelText: 'EXP' }).advisory.includes('DATE_TYPE_UNKNOWN'));
+  assert.ok(
+    judge({ dateLabelText: 'BEST BEFORE', dateType: 'use_by' }).advisory.includes(
+      'DATE_TYPE_MISMATCH',
+    ),
+  );
+});
+
+test('a best-before pack is still auto-acceptable on its own evidence', () => {
+  // Presenting one concept does not mean judging one concept. The gate cares
+  // whether the date is trustworthy, not what the wording was.
+  const decision = judge({ dateLabelText: 'BEST BEFORE', dateType: 'best_before' });
+  assert.equal(decision.verdict, 'auto_accept');
+});
+
+test('verdicts are unchanged by anything in the editing work', () => {
+  // A blunt canary. If a later change to items, presentation or editing ever
+  // reaches the gate, these three move.
+  assert.equal(judge().verdict, 'auto_accept');
+  assert.equal(judge({ dateText: '04/09/26', expiryDate: '2026-09-04' }).verdict, 'review');
+  assert.equal(
+    evaluateRecognitionTrust(
+      clean({ itemName: null, expiryDate: null, dateText: null }),
+      TODAY,
+    ).verdict,
+    'failed',
+  );
+});

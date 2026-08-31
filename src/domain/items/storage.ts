@@ -19,8 +19,14 @@ const STORAGE_KEY = '@useby_v1_items';
  * which is true, because nothing was retained for it. Nothing rewrites existing
  * records and `isItem` does not inspect the field, so a v1 or v2 record is
  * still a valid item and keeps working untouched.
+ *
+ * Version 4 added the optional `dateUserSet`, on the same terms again. Its
+ * absence on an older record is not a claim that the date came from the
+ * packaging — it means nothing was tracking the question when that item was
+ * saved, which is the honest reading and the one anything acting on date
+ * semantics should take.
  */
-const STORAGE_VERSION = 3;
+const STORAGE_VERSION = 4;
 
 interface Envelope {
   version: number;

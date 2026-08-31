@@ -14,6 +14,7 @@ import { UseByItem } from '../../types';
 import { CreateItemInput, DerivedItem } from './types';
 import { loadItems, saveItems } from './storage';
 import { deriveItem } from './derive';
+import { applyItemEdit, editChangesAnything, type ItemEdit } from './edit';
 import { photoStore } from './photoStore';
 import { sortItems } from '../../utils/statusUtils';
 
@@ -53,6 +54,9 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
     // this is a name for a file that exists. Absent for a manual add, and
     // absent when the copy failed — both simply mean no photo.
     ...(input.photo ? { photo: input.photo } : {}),
+    // Only when true. An absent field means "nothing was tracking this", which
+    // is a different statement from "the date came from the packaging".
+    ...(input.dateUserSet ? { dateUserSet: true } : {}),
     source: input.source ?? 'manual',
     createdAt: now,
     updatedAt: now,
@@ -62,6 +66,42 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
   await saveItems([...existing, item]);
 
   return deriveItem(item);
+}
+
+/**
+ * Change a saved item's name or Use By date.
+ *
+ * An update in place, never a delete and recreate. The item keeps its `id`, its
+ * `createdAt`, its retained photo and its recorded provenance; only the two
+ * editable fields and `updatedAt` move. What the new record looks like is
+ * decided by `applyItemEdit`, which is pure and tested — this function is the
+ * storage half and nothing more.
+ *
+ * **It does not touch the filesystem.** Metadata editing has nothing to do with
+ * the photo: the filename is carried across unchanged, so there is no path here
+ * that could orphan, duplicate or delete an image.
+ *
+ * Returns the updated item, or `null` if it is not there any more — reachable
+ * when the item was removed from another screen while the editor was open, and
+ * an ordinary answer rather than an error.
+ */
+export async function updateItem(
+  itemId: string,
+  edit: ItemEdit,
+): Promise<DerivedItem | null> {
+  const items = await loadItems();
+  const existing = items.find((i) => i.id === itemId);
+  if (!existing) return null;
+
+  // A Save that changes nothing is not a write. It should not bump `updatedAt`
+  // and it must not mark the date as the user's — opening the editor and
+  // pressing Save is not the same event as changing the date.
+  if (!editChangesAnything(existing, edit)) return deriveItem(existing);
+
+  const updated = applyItemEdit(existing, edit, new Date().toISOString());
+  await saveItems(items.map((i) => (i.id === itemId ? updated : i)));
+
+  return deriveItem(updated);
 }
 
 /**

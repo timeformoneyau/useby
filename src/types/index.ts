@@ -8,9 +8,17 @@ export type ItemSource = 'manual' | 'photo';
  * genuinely does not say which kind of date it is, so the proxy preserves the
  * date and declines to guess the meaning (decision D1 on the Build Plan).
  *
- * Persisted locally on `UseByItem` so the list can describe a date truthfully
- * rather than calling every item "Use by". Syncing it to other devices is
- * still Phase 3 schema work (decision D2).
+ * **Internal from here on. Nothing shows this to anyone.** The product presents
+ * a single consumer concept — a Use By date — and the presentation layer no
+ * longer takes this value at all, which is deliberate: a rule enforced by a
+ * function signature cannot be quietly reintroduced by a later screen.
+ *
+ * It is still recorded, and deliberately, because it is a genuine observation
+ * about the packaging and it is load-bearing for things that are not
+ * presentation: recognition evidence, the shadow trust gate's date-type
+ * signals, diagnostics, and any future food-safety behaviour, which is the one
+ * place the use-by/best-before distinction has real consequences. Simplifying
+ * what the user reads is not a reason to stop knowing what the pack said.
  */
 export type DateType = 'use_by' | 'best_before' | 'unknown';
 
@@ -61,6 +69,25 @@ export interface UseByItem {
    * Local only. This never leaves the device.
    */
   photo?: string;
+  /**
+   * The stored date came from a person, not from the packaging.
+   *
+   * Set when someone enters or corrects the date, and sticky once set. It
+   * exists to stop `dateType` becoming a lie: the pack may have said
+   * "BEST BEFORE", but if the read was wrong and a human replaced the date,
+   * that classification no longer describes the value sitting next to it.
+   *
+   * Neither clearing `dateType` (which destroys an observation) nor rewriting
+   * it (which invents one) is acceptable, so the observation stays and this
+   * says the date beside it is not the one it was made about. Anything that
+   * later wants to act on date *semantics* can see that and decline to make a
+   * claim it cannot support.
+   *
+   * Absent on every record written before this field existed, which reads as
+   * `undefined` and means only "we do not know" — the honest answer for items
+   * saved when nothing was tracking it.
+   */
+  dateUserSet?: boolean;
   source: ItemSource;
   createdAt: string;
   updatedAt: string;
@@ -187,4 +214,14 @@ export type RootStackParamList = {
    * the moment either screen changes one. The screen loads what it shows.
    */
   ItemDetail: { itemId: string };
+  /**
+   * Editing a saved item's name and Use By date.
+   *
+   * A separate screen from Review & Save rather than a mode inside it. That
+   * editor's save path now carries photo retention, draft release and shadow
+   * logging, and every scan in the app goes through it; adding an `if (editing)`
+   * at the top of that function to skip all three would put the one flow under
+   * device validation at risk to save a text input and a date button.
+   */
+  EditItem: { itemId: string };
 };

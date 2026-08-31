@@ -13,7 +13,6 @@
  * Pure and free of React Native so the offline suite can exercise it.
  */
 import { format } from 'date-fns';
-import type { DateType } from '../../types';
 import type { DerivedItem } from './types';
 
 export type GroupKey = 'past' | 'today' | 'soon' | 'later';
@@ -58,22 +57,29 @@ export function heroText(daysUntilDue: number): string {
 }
 
 /**
- * What the packaging called the date, in the tense that matches where it sits.
+ * What the app calls an item's date, in the tense that matches where it sits.
  *
- * `unknown` becomes a bare "Date": no more than the pack told us. A
- * best-before item is never described as past a safety deadline, which is the
- * whole reason the distinction is carried from scan time (D1/D2).
+ * **One concept, and it is always Use By.** The app used to say "Use By",
+ * "Best Before" or a bare "Date" depending on what the packaging printed. That
+ * was accurate and it was the wrong thing to show: three names for one idea,
+ * asking the reader to hold a food-safety distinction in their head before they
+ * can answer "what do I need to use first?" — which is the only question this
+ * screen exists to answer.
+ *
+ * **This function no longer takes a `DateType`, and that is the point.** The
+ * distinction is still recorded on the item and still matters internally, so a
+ * rule kept only in copy would drift back the first time someone added a branch
+ * "just for past-dated items". Removing the parameter makes it impossible to
+ * reintroduce here without a deliberate change of shape.
+ *
+ * Where the distinction has real consequences — anything that would tell
+ * someone food is no longer safe — it must be read from the item's `dateType`
+ * and `dateUserSet` directly, not inferred from what this returns. No such
+ * feature exists today, and this comment is here so the next one does not
+ * assume the word on screen carries the semantics.
  */
-export function typeWord(dateType: DateType | undefined, isPast: boolean): string {
-  const type = dateType ?? 'unknown';
-  if (isPast) {
-    if (type === 'use_by') return 'Past Use By';
-    if (type === 'best_before') return 'Best Before passed';
-    return 'Date passed';
-  }
-  if (type === 'use_by') return 'Use By';
-  if (type === 'best_before') return 'Best Before';
-  return 'Date';
+export function dateWord(isPast: boolean): string {
+  return isPast ? 'Past Use By' : 'Use By';
 }
 
 /** "24 Aug" — the calendar date, kept as a footnote to the time left. */
@@ -86,13 +92,9 @@ export function longDate(date: Date): string {
   return format(date, 'd MMM yyyy');
 }
 
-/** The row's right-hand column: what the pack said, and when. */
-export function rowSubtitle(
-  dateType: DateType | undefined,
-  dueDate: Date,
-  daysUntilDue: number,
-): string {
-  return `${typeWord(dateType, daysUntilDue < 0)} · ${shortDate(dueDate)}`;
+/** The row's right-hand column: the item's date, and what to call it. */
+export function rowSubtitle(dueDate: Date, daysUntilDue: number): string {
+  return `${dateWord(daysUntilDue < 0)} · ${shortDate(dueDate)}`;
 }
 
 export interface ItemGroup {

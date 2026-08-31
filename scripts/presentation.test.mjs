@@ -17,7 +17,7 @@ import {
   heroText,
   rowSubtitle,
   shortDate,
-  typeWord,
+  dateWord,
 } from '../src/domain/items/presentation.ts';
 
 const item = (id, name, daysUntilDue, dateType) => ({
@@ -62,33 +62,43 @@ test('hero text reads naturally at every boundary', () => {
   assert.equal(heroText(2), '2 days left');
 });
 
-test('date type is described truthfully in both tenses', () => {
-  assert.equal(typeWord('use_by', false), 'Use By');
-  assert.equal(typeWord('best_before', false), 'Best Before');
-  assert.equal(typeWord('unknown', false), 'Date');
-  assert.equal(typeWord('use_by', true), 'Past Use By');
-  assert.equal(typeWord('best_before', true), 'Best Before passed');
-  assert.equal(typeWord('unknown', true), 'Date passed');
+test('there is one date concept, and it is Use By', () => {
+  // The app used to say "Use By", "Best Before" or a bare "Date" depending on
+  // what the packaging printed. Accurate, and the wrong thing to show: three
+  // names for one idea, on a screen whose only job is "what do I use first?".
+  assert.equal(dateWord(false), 'Use By');
+  assert.equal(dateWord(true), 'Past Use By');
 });
 
-test('a best-before item is never described as past a safety deadline', () => {
-  const past = typeWord('best_before', true);
-  assert.doesNotMatch(past, /Use By/i);
-  assert.equal(past, 'Best Before passed');
+test('the consumer wording cannot depend on what the pack said', () => {
+  // Structural, not a matter of copy discipline. `dateWord` takes no DateType,
+  // so a later screen cannot quietly reintroduce a branch on it — which is
+  // exactly how a rule kept only in wording drifts back.
+  assert.equal(dateWord.length, 1, 'tense only, no date type');
 });
 
-test('an item saved before dateType existed reads as unknown, not as a claim', () => {
-  // v1 records have no dateType at all.
-  assert.equal(typeWord(undefined, false), 'Date');
-  assert.equal(typeWord(undefined, true), 'Date passed');
+test('no consumer wording says Best Before or Best By', () => {
+  for (const isPast of [true, false]) {
+    assert.doesNotMatch(dateWord(isPast), /best\s*(before|by)/i);
+  }
 });
 
-test('the row subtitle pairs what the pack said with when', () => {
+test('the row subtitle pairs the date with what to call it', () => {
   const due = new Date(2026, 7, 26);
-  assert.equal(rowSubtitle('use_by', due, 2), 'Use By · 26 Aug');
-  assert.equal(rowSubtitle('best_before', due, 2), 'Best Before · 26 Aug');
-  assert.equal(rowSubtitle('use_by', due, -3), 'Past Use By · 26 Aug');
+  assert.equal(rowSubtitle(due, 2), 'Use By · 26 Aug');
+  assert.equal(rowSubtitle(due, -3), 'Past Use By · 26 Aug');
   assert.equal(shortDate(new Date(2026, 8, 1)), '1 Sep');
+});
+
+test('an item reads the same however its pack was labelled', () => {
+  // The point of the product decision, stated as a test. A best_before item, a
+  // use_by item, an unknown one and a record saved before dateType existed all
+  // produce identical wording — the row cannot tell them apart, and the stored
+  // classification is untouched by that.
+  const due = new Date(2026, 7, 26);
+  const subtitle = rowSubtitle(due, 2);
+  assert.equal(subtitle, 'Use By · 26 Aug');
+  assert.doesNotMatch(subtitle, /best/i);
 });
 
 test('grouping preserves the order it was given', () => {

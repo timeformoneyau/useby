@@ -20,6 +20,7 @@ import MainListScreen from './src/screens/MainListScreen';
 import AddItemScreen from './src/screens/AddItemScreen';
 import CaptureScreen from './src/screens/CaptureScreen';
 import ItemDetailScreen from './src/screens/ItemDetailScreen';
+import EditItemScreen from './src/screens/EditItemScreen';
 
 /**
  * since-fresh gated this navigator behind a Supabase auth stack and
@@ -86,6 +87,7 @@ export default function App() {
           <Stack.Screen name="Add" component={AddItemScreen} />
           <Stack.Screen name="Capture" component={CaptureScreen} />
           <Stack.Screen name="ItemDetail" component={ItemDetailScreen} />
+          <Stack.Screen name="EditItem" component={EditItemScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>

@@ -17,7 +17,7 @@ import { createItem } from '../domain/items/service';
 import { photoStore } from '../domain/items/photoStore';
 import { saveScannedItem } from '../domain/items/saveScan';
 import { todayString, parseDate, getDaysUntilDue } from '../utils/dateUtils';
-import { heroText, longDate, typeWord } from '../domain/items/presentation';
+import { dateWord, heroText, longDate } from '../domain/items/presentation';
 import { colours, fonts, hit, radius } from '../theme';
 import DatePickerModal from '../components/DatePickerModal';
 import { reviewCopy } from '../domain/scan/mapping';
@@ -50,12 +50,6 @@ type AddRoute = RouteProp<RootStackParamList, 'Add'>;
  * friction than the wheel, and the wheel cannot produce an unparseable value.
  * The field wears the artboard's styling and opens the native picker.
  */
-
-const DATE_TYPE_OPTIONS: { value: DateType; label: string }[] = [
-  { value: 'use_by', label: 'Use By' },
-  { value: 'best_before', label: 'Best Before' },
-  { value: 'unknown', label: 'Not sure' },
-];
 
 export default function AddItemScreen() {
   const navigation = useNavigation<Nav>();
@@ -149,7 +143,17 @@ export default function AddItemScreen() {
 
   const [name, setName] = useState(prefill?.name ?? '');
   const [expiryDate, setExpiryDate] = useState(prefill?.expiryDate ?? todayString());
-  const [dateType, setDateType] = useState<DateType>(prefill?.dateType ?? 'unknown');
+  /**
+   * What the packaging said, carried through to storage untouched.
+   *
+   * Not state and not editable: the product presents one date concept, so there
+   * is nothing here for a person to choose between. It is still recorded,
+   * because it is a real observation about the pack and the shadow trust gate,
+   * diagnostics and any future food-safety behaviour all depend on it — see
+   * `DateType`. Simplifying what someone reads is not a reason to stop knowing
+   * what was printed.
+   */
+  const dateType: DateType = prefill?.dateType ?? 'unknown';
   const [source] = useState<ItemSource>(prefill?.source ?? 'manual');
   const [showExpiryPicker, setShowExpiryPicker] = useState(false);
   const [nameFocused, setNameFocused] = useState(false);
@@ -228,6 +232,12 @@ export default function AddItemScreen() {
           name: trimmed,
           expiryDate,
           dateType,
+          // The date being saved is a person's whenever it is not the one
+          // recognition proposed — either they corrected it, or nothing was
+          // read and they supplied it, or this is a manual add. That keeps
+          // `dateType` from reading as a claim about a date the pack never
+          // printed. See `UseByItem.dateUserSet`.
+          dateUserSet: expiryDate !== prefill?.expiryDate,
           source,
           scanId,
           photoUri: pendingPhotoUri,
@@ -352,43 +362,9 @@ export default function AddItemScreen() {
             )}
           </View>
 
-          {/* What the pack called the date */}
-          <View style={styles.field}>
-            <Text style={styles.fieldLabel}>The package says</Text>
-            <View style={styles.segmentRow}>
-              {DATE_TYPE_OPTIONS.map((option) => {
-                const selected = dateType === option.value;
-                return (
-                  <TouchableOpacity
-                    key={option.value}
-                    style={[styles.segment, selected && styles.segmentSelected]}
-                    onPress={() => setDateType(option.value)}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    accessibilityLabel={option.label}
-                  >
-                    <Text
-                      style={[
-                        styles.segmentText,
-                        selected && styles.segmentTextSelected,
-                      ]}
-                    >
-                      {option.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            {dateType === 'unknown' && (
-              <Text style={styles.helpHint}>
-                We'll just call it “Date” — no more than the pack told us.
-              </Text>
-            )}
-          </View>
-
           {/* Date */}
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Date on the pack</Text>
+            <Text style={styles.fieldLabel}>Use By date</Text>
             <TouchableOpacity
               style={[styles.input, styles.dateInput, checkDate && styles.inputChecking]}
               onPress={() => {
@@ -396,7 +372,7 @@ export default function AddItemScreen() {
                 setCheckDate(false);
               }}
               accessibilityRole="button"
-              accessibilityLabel={`Date on the pack, ${longDate(parsed)}`}
+              accessibilityLabel={`Use By date, ${longDate(parsed)}`}
             >
               <Text style={styles.dateValue}>{longDate(parsed)}</Text>
             </TouchableOpacity>
@@ -414,7 +390,7 @@ export default function AddItemScreen() {
               </View>
             ) : (
               <Text style={styles.previewText}>
-                {`${typeWord(dateType, daysUntilDue < 0)} · ${heroText(daysUntilDue).toLowerCase()}`}
+                {`${dateWord(daysUntilDue < 0)} · ${heroText(daysUntilDue).toLowerCase()}`}
               </Text>
             )}
           </View>
@@ -528,37 +504,11 @@ const styles = StyleSheet.create({
     color: colours.ink,
   },
 
-  segmentRow: { flexDirection: 'row', gap: 8 },
-  segment: {
-    flex: 1,
-    minHeight: 54,
-    borderRadius: radius.segment,
-    borderWidth: 1.5,
-    borderColor: colours.inputBorder,
-    backgroundColor: colours.card,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  segmentSelected: { backgroundColor: colours.sage, borderColor: colours.sage },
-  segmentText: {
-    fontSize: 14.5,
-    fontFamily: fonts.semibold,
-    letterSpacing: -0.15,
-    color: colours.ink,
-  },
-  segmentTextSelected: { color: colours.onSage },
-
   checkHint: {
     fontSize: 13.5,
     fontFamily: fonts.regular,
     lineHeight: 19,
     color: colours.clayText,
-  },
-  helpHint: {
-    fontSize: 13.5,
-    fontFamily: fonts.regular,
-    lineHeight: 19,
-    color: colours.textSecondary,
   },
   previewText: { fontSize: 13.5, fontFamily: fonts.regular, color: colours.textSecondary },
 

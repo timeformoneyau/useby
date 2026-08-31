@@ -61,7 +61,7 @@ export default function ItemCard({
 
   const isHot = daysUntilDue <= 0;
   const hero = heroText(daysUntilDue);
-  const subtitle = rowSubtitle(item.dateType, dueDate, daysUntilDue);
+  const subtitle = rowSubtitle(dueDate, daysUntilDue);
 
   const barColour = isHot
     ? colours.barHot
