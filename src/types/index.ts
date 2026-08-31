@@ -97,12 +97,41 @@ export interface ExtractedField<T> {
   confidence: Confidence;
 }
 
+/**
+ * What the model reported seeing, before it interpreted any of it.
+ *
+ * Kept separate from the fields above because the distinction is the whole
+ * point: `dateText` is a claim about *characters printed on a pack*, which the
+ * model can answer honestly and which application code can then check. The
+ * normalised `expiryDate` beside it is the model's own conclusion about what
+ * those characters mean — a judgement, and one that carries no record of how it
+ * was reached. `04/09/26` normalised to a September date and to an April date
+ * look identical once the characters are gone.
+ *
+ * Optional throughout. A proxy deployment that predates this block simply does
+ * not send it, and the app must keep working exactly as before — the shadow
+ * gate then reports that there was no evidence to judge on, which is the
+ * truthful answer rather than an error.
+ *
+ * Never rendered. Recognition still drives the editor from the fields above.
+ */
+export interface ObservedText {
+  /** The date exactly as printed, e.g. `04 SEP 26`. Null if not fully legible. */
+  dateText: string | null;
+  /** Wording printed with that date, e.g. `USE BY`. Null if there was none. */
+  dateLabelText: string | null;
+  /** Every other date-like string visible on the pack. */
+  otherDateTexts: string[];
+}
+
 /** The `fields` object of a successful `POST /api/parse-expiry` response. */
 export interface ExtractedFields {
   itemName: ExtractedField<string>;
   /** ISO YYYY-MM-DD, already normalised server-side. Null when unreadable. */
   expiryDate: ExtractedField<string>;
   dateType: { value: DateType; confidence: Confidence };
+  /** Verbatim observations, when the proxy supplies them. See `ObservedText`. */
+  observed?: ObservedText;
 }
 
 /** Prefill passed from CaptureScreen into AddItemScreen after a capture. */

@@ -32,6 +32,7 @@
  */
 import type { AddScreenPrefill } from '../../types';
 import type { CaptureTimings } from './diagnostics';
+import type { TrustDecision } from './trust';
 
 /**
  * How many requests may be in the air at once.
@@ -100,6 +101,19 @@ export interface PendingScan {
    * manual prefill so even that case stays reviewable.
    */
   prefill?: AddScreenPrefill;
+  /**
+   * What the shadow trust gate would have decided about this scan.
+   *
+   * Carried so the editor can pair the verdict with what the user then did —
+   * the two halves of the measurement have to meet somewhere, and the pending
+   * record is the only thing that outlives both screens.
+   *
+   * **Nothing reads this to decide anything.** No status, no copy, no
+   * navigation and no save path depends on it; a scan with `auto_accept` and a
+   * scan with `review` are treated identically everywhere in the app. Absent
+   * for a scan that failed outright, which had no result to judge.
+   */
+  trust?: TrustDecision;
 }
 
 /** Everything needed to send one scan, handed over at the shutter. */
@@ -122,6 +136,8 @@ export interface ScanJob {
 export interface ScanOutcome {
   ok: boolean;
   prefill: AddScreenPrefill;
+  /** Shadow only. See `PendingScan.trust`. */
+  trust?: TrustDecision;
 }
 
 /**
@@ -310,6 +326,7 @@ export function createScanQueue(options: {
       status: outcome?.ok ? 'ready' : 'failed',
       settledAt: now(),
       prefill: outcome?.prefill,
+      trust: outcome?.trust,
     });
   }
 

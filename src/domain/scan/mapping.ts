@@ -14,7 +14,9 @@ import type {
   DateType,
   ExtractedFields,
   ItemSource,
+  ObservedText,
 } from '../../types';
+import type { RecognitionEvidence, TrustDecision } from './trust';
 
 export const DATE_TYPES: readonly DateType[] = ['use_by', 'best_before', 'unknown'];
 
@@ -31,7 +33,15 @@ export type ScanFailureReason =
   | 'malformed';
 
 export type ScanResult =
-  | { ok: true; prefill: AddScreenPrefill }
+  | {
+      ok: true;
+      prefill: AddScreenPrefill;
+      /**
+       * What the shadow gate would have decided. Carried, logged and compared —
+       * never consulted. Nothing downstream branches on it.
+       */
+      trust: TrustDecision;
+    }
   | { ok: false; reason: ScanFailureReason; message: string };
 
 /**
@@ -117,6 +127,68 @@ export function isIsoDate(value: string): boolean {
   );
 }
 
+/** Longest verbatim string we will carry, and the most alternative dates. */
+const MAX_OBSERVED_CHARS = 40;
+const MAX_OTHER_DATES = 6;
+
+function observedText(value: unknown): string | null {
+  const text = textValue(value);
+  return text === null ? null : text.slice(0, MAX_OBSERVED_CHARS);
+}
+
+/**
+ * Read the verbatim observations, if this proxy sends any.
+ *
+ * Returns `undefined` rather than an empty shape when the block is absent, so
+ * "this deployment does not report observations" stays distinguishable from
+ * "it looked and saw nothing printed". The trust gate treats those differently
+ * and conflating them would quietly turn a deployment gap into a finding about
+ * packaging.
+ *
+ * Bounded on the way in. These strings reach a log line, and they arrive from a
+ * separately deployed service, so a rogue or mis-deployed proxy must not be
+ * able to put something enormous into one.
+ */
+export function readObserved(fields: Record<string, unknown>): ObservedText | undefined {
+  const raw = fields.observed;
+  if (typeof raw !== 'object' || raw === null) return undefined;
+
+  const block = raw as { dateText?: unknown; dateLabelText?: unknown; otherDateTexts?: unknown };
+
+  const others = Array.isArray(block.otherDateTexts)
+    ? block.otherDateTexts
+        .map(observedText)
+        .filter((t): t is string => t !== null)
+        .slice(0, MAX_OTHER_DATES)
+    : [];
+
+  return {
+    dateText: observedText(block.dateText),
+    dateLabelText: observedText(block.dateLabelText),
+    otherDateTexts: others,
+  };
+}
+
+/**
+ * Everything the shadow trust gate needs, in one flat shape.
+ *
+ * Lives here because the split between what the model *observed* and what it
+ * *concluded* is a property of the wire contract, and this is where the wire
+ * contract is read.
+ */
+export function toEvidence(fields: ExtractedFields): RecognitionEvidence {
+  return {
+    itemName: fields.itemName.value,
+    nameConfidence: fields.itemName.confidence,
+    expiryDate: fields.expiryDate.value,
+    dateConfidence: fields.expiryDate.confidence,
+    dateType: fields.dateType.value,
+    dateText: fields.observed?.dateText ?? null,
+    dateLabelText: fields.observed?.dateLabelText ?? null,
+    otherDateTexts: fields.observed?.otherDateTexts ?? [],
+  };
+}
+
 /**
  * Validate a `200` body against the response contract.
  *
@@ -136,8 +208,10 @@ export function readFields(body: unknown): ExtractedFields | null {
   if (!itemName || !expiryDate || !dateType) return null;
 
   const date = textValue(expiryDate.value);
+  const observed = readObserved(fields as Record<string, unknown>);
 
   return {
+    ...(observed ? { observed } : {}),
     itemName: {
       value: textValue(itemName.value),
       confidence: confidenceOf(itemName.confidence),

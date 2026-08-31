@@ -13,7 +13,7 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { emptyPrefill, failureMessage } from '../domain/scan/mapping';
-import { newScanId, scanTrace } from '../domain/scan/diagnostics';
+import { newScanId, scanTrace, trustTrace } from '../domain/scan/diagnostics';
 import { scanQueue } from '../domain/scan/queue';
 import { latestSettled, type PendingScan } from '../domain/scan/pending';
 import { usePendingCounts, usePendingScans } from '../domain/scan/usePendingScans';
@@ -288,6 +288,19 @@ export default function CaptureScreen() {
 
     if (replacing) {
       setRetaking(false);
+
+      // A retake is the third outcome a scan can have, and it means the result
+      // was not good enough to work with — which is exactly as informative as a
+      // corrected date. Recorded before the draft goes, while its verdict is
+      // still there to read.
+      const superseded = scanQueue.get(replacing);
+      trustTrace(replacing, 'outcome', {
+        action: 'retaken',
+        verdict: superseded?.trust?.verdict ?? 'none',
+        blocking: superseded?.trust?.blocking ?? [],
+        replacedBy: scanId,
+      });
+
       scanQueue.replace(replacing, job);
       // The result the user was looking at is gone, and the card must not go on
       // showing it. Clearing the dismissal set too — a retake is a fresh look at

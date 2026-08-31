@@ -177,6 +177,42 @@ export function isScanId(value: string): boolean {
 export type ScanStage = 'capture' | 'request';
 
 /**
+ * The shadow-mode log, and the only record this evidence exercise produces.
+ *
+ * Written under its own event name so a run is one grep:
+ *
+ *   adb logcat -d -s ReactNativeJS | grep useby.trust
+ *
+ * Two lines per scan, joined by `scanId`. The `decision` line says what the
+ * trust gate would have done at recognition time; the `outcome` line, written
+ * when the user saves, discards or retakes, says what they actually did. The
+ * pair is the measurement — a verdict alone proves nothing, and a correction
+ * alone says nothing about whether the gate would have caught it.
+ *
+ * **Nothing here changes what the user sees.** No caller reads a verdict to
+ * decide anything; these lines are written and then ignored by the app.
+ *
+ * What may appear: printed dates and printed label wording, which are
+ * properties of the packaging rather than of the person, and are the whole
+ * evidence base for diagnosing why the gate rejected something. What may not,
+ * unchanged from the rules above: the item name, the image, the bearer token.
+ * Whether the name was corrected is a boolean and answers the question without
+ * recording the contents of anyone's fridge.
+ *
+ * These lines live only in Android's log buffer. Nothing is persisted, so a run
+ * has to be dumped afterwards — see the collection procedure in the Build Log.
+ */
+export type TrustStage = 'decision' | 'outcome';
+
+export function trustTrace(
+  scanId: string,
+  stage: TrustStage,
+  entry: Record<string, unknown>,
+): void {
+  console.log(`useby.trust ${JSON.stringify({ scanId, stage, ...entry })}`);
+}
+
+/**
  * Write one line.
  *
  * `console.log` rather than anything cleverer because it is what reaches

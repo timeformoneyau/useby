@@ -33,7 +33,7 @@ const run: ScanRunner = async (job) => {
   });
 
   return result.ok
-    ? { ok: true, prefill: result.prefill }
+    ? { ok: true, prefill: result.prefill, trust: result.trust }
     : { ok: false, prefill: emptyPrefill('photo', result.message) };
 };
 

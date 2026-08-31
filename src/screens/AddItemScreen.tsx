@@ -22,6 +22,8 @@ import { colours, fonts, hit, radius } from '../theme';
 import DatePickerModal from '../components/DatePickerModal';
 import { reviewCopy } from '../domain/scan/mapping';
 import { scanQueue } from '../domain/scan/queue';
+import { shadowOutcome, type TrustDecision } from '../domain/scan/trust';
+import { trustTrace } from '../domain/scan/diagnostics';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Add'>;
 type AddRoute = RouteProp<RootStackParamList, 'Add'>;
@@ -89,6 +91,61 @@ export default function AddItemScreen() {
   const [pendingPhotoUri] = useState<string | undefined>(
     () => (scanId ? scanQueue.get(scanId)?.imageUri : undefined),
   );
+
+  /**
+   * The shadow verdict for this scan, captured alongside the photo.
+   *
+   * Read once and then only ever written to a log line. It does not reach the
+   * form, the copy, the Save button or the navigation — this screen behaves
+   * identically whether the gate said `auto_accept` or `review`, which is the
+   * property that makes this shadow mode rather than a feature.
+   */
+  const [shadowTrust] = useState<TrustDecision | undefined>(
+    () => (scanId ? scanQueue.get(scanId)?.trust : undefined),
+  );
+
+  /**
+   * Pair the shadow verdict with what the user actually did.
+   *
+   * The verdict alone proves nothing: "would have been accepted" is only
+   * interesting beside "and the date was wrong". This is where the two halves
+   * meet, because this screen is the only place that holds both what
+   * recognition proposed and what the person settled on.
+   *
+   * Names are reported as a boolean, never as text — same rule as every other
+   * line the app writes.
+   */
+  function recordShadowOutcome(action: 'saved' | 'discarded', savedName: string) {
+    if (!scanId) return;
+
+    const recognised = {
+      name: prefill?.name ?? '',
+      expiryDate: prefill?.expiryDate ?? null,
+      dateType: prefill?.dateType ?? 'unknown',
+    };
+    const outcome = shadowOutcome(shadowTrust?.verdict ?? 'failed', recognised, {
+      name: savedName,
+      expiryDate: action === 'saved' ? expiryDate : null,
+      dateType,
+    });
+
+    trustTrace(scanId, 'outcome', {
+      action,
+      verdict: shadowTrust?.verdict ?? 'none',
+      blocking: shadowTrust?.blocking ?? [],
+      ...(action === 'saved'
+        ? {
+            dateChanged: outcome.dateChanged,
+            dateSupplied: outcome.dateSupplied,
+            nameChanged: outcome.nameChanged,
+            typeChanged: outcome.dateTypeChanged,
+            // The number the whole exercise exists to produce: the gate would
+            // have saved this silently and the date turned out to be wrong.
+            falseAccept: outcome.falseAccept,
+          }
+        : {}),
+    });
+  }
 
   const [name, setName] = useState(prefill?.name ?? '');
   const [expiryDate, setExpiryDate] = useState(prefill?.expiryDate ?? todayString());
@@ -177,6 +234,9 @@ export default function AddItemScreen() {
         },
       );
 
+      // After the write, so a save that failed is not recorded as one. Written
+      // for its own sake and read by nothing.
+      recordShadowOutcome('saved', trimmed);
       dismiss();
     } catch {
       // Let them try again rather than stranding a filled-in form behind a
@@ -194,6 +254,9 @@ export default function AddItemScreen() {
    * confirmation dialog — the screen already is the confirmation.
    */
   function handleDiscard() {
+    // A discard is evidence too: a scan the gate would have accepted and the
+    // user threw away is as interesting as one whose date they corrected.
+    recordShadowOutcome('discarded', name.trim());
     if (scanId) scanQueue.remove(scanId);
     dismiss();
   }
