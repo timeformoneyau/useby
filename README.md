@@ -25,7 +25,7 @@ npm install
 npm start          # then press 'a' for Android
 npm run android    # or build and run a dev client directly
 npm run typecheck
-npm test           # offline: scan response mapping. No network, no key needed.
+npm test           # offline: scan response mapping, analysis harness. No network, no key.
 ```
 
 ## Scanning: pointing the app at the proxy
@@ -138,6 +138,24 @@ request under `"evt":"parse-expiry"`, carrying the same `scanId` as `id`. Betwee
 the two, a failed scan can be placed at capture, transport, upstream, parsing,
 validation or the model itself.
 
+### Analysing a testing session
+
+A whole session of these lines can be analysed offline in one command, rather
+than read by hand:
+
+```bash
+npm run analyse:scans -- ./logs --ground-truth ./ground-truth.json
+```
+
+It reports dataset integrity, what a trust gate would have auto-accepted, how
+often that would have been wrong, and — with an exact Clopper-Pearson bound —
+whether the sample is big enough for the answer to mean anything. See
+[docs/scan-analysis.md](docs/scan-analysis.md), which also records the three
+instrumentation gaps that currently make some of its input hand-supplied.
+
+The harness is measurement only. It reads exported logs, changes nothing, and a
+result from it does not authorise altering review behaviour.
+
 ## Remaining setup: link the EAS project
 
 This has **not** been run yet — it needs an interactive login to your Expo
@@ -175,6 +193,7 @@ src/domain/items/presentation.ts  how an item reads: four visible groups, row co
 src/components/               ItemCard (the row), DatePickerModal
 src/screens/                  MainListScreen, AddItemScreen, CaptureScreen
 scripts/                      offline tests (no network, no key)
+tools/scan-analysis/          offline analysis of exported scan logs (not app code)
 ```
 
 Screens never touch storage directly — all mutations go through

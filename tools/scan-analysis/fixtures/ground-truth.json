@@ -1,0 +1,104 @@
+{
+  "_comment": [
+    "Ground truth and gate decisions for fixtures/session.log.",
+    "One record per scanId. The app logs neither the user's corrections nor a",
+    "gate decision today, so both are supplied here by hand — see",
+    "docs/scan-analysis.md for the contract and the measurement gap it covers.",
+    "There is deliberately no item-name field: name accuracy is a boolean,",
+    "because the diagnostics avoid recording what is in someone's fridge."
+  ],
+  "scans": [
+    {
+      "scanId": "p-mfk2a001-0001a",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-09-14",
+      "truthDate": "2026-09-14",
+      "nameCorrect": true
+    },
+    {
+      "scanId": "p-mfk2a002-0002b",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-09-17",
+      "truthDate": "2026-09-20",
+      "nameCorrect": true
+    },
+    {
+      "scanId": "p-mfk2a003-0003c",
+      "gate": {
+        "decision": "reject",
+        "reasons": ["item-name-missing", "date-confidence-below-high"]
+      },
+      "proposedDate": "2026-11-02",
+      "truthDate": "2026-11-02",
+      "nameCorrect": false
+    },
+    {
+      "scanId": "p-mfk2a004-0004d",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-10-01",
+      "truthDate": "2026-10-01",
+      "nameCorrect": false
+    },
+    {
+      "scanId": "p-mfk2a005-0005e",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-10-25",
+      "truthDate": "2026-09-10",
+      "nameCorrect": true
+    },
+    {
+      "scanId": "p-mfk2a006-0006f",
+      "gate": { "decision": "reject", "reasons": ["no-fields-read"] },
+      "proposedDate": null,
+      "truthDate": "2026-09-19",
+      "nameCorrect": false
+    },
+    {
+      "scanId": "p-mfk2a007-0007g",
+      "gate": { "decision": "reject", "reasons": ["scan-failed"] },
+      "proposedDate": null,
+      "truthDate": "2026-09-22",
+      "nameCorrect": false
+    },
+    {
+      "scanId": "p-mfk2a008-0008h",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-09-30",
+      "truthDate": "2026-09-30",
+      "nameCorrect": true
+    },
+    {
+      "scanId": "p-mfk2a009-0009i",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-09-07",
+      "truthDate": "2026-09-05",
+      "nameCorrect": true
+    },
+    {
+      "scanId": "p-mfk2a010-0010j",
+      "gate": { "decision": "reject", "reasons": ["scan-failed"] },
+      "proposedDate": null,
+      "truthDate": null
+    },
+    {
+      "scanId": "p-mfk2a011-0011k",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-09-25",
+      "truthDate": "2026-09-25",
+      "nameCorrect": true
+    },
+    {
+      "scanId": "p-mfk2a012-0012l",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-09-18",
+      "truthDate": "2026-09-18",
+      "nameCorrect": true
+    },
+    {
+      "scanId": "p-mfk2a014-0014n",
+      "gate": { "decision": "accept", "reasons": [] },
+      "proposedDate": "2026-10-05",
+      "truthDate": null
+    }
+  ]
+}

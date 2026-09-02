@@ -8,6 +8,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
+    "analyse:scans": "node tools/scan-analysis/cli.mjs",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test scripts/*.test.mjs"
   },
   "dependencies": {
