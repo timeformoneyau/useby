@@ -80,13 +80,16 @@ export function renderReport(r) {
       ['Unique scan ids', num(d.uniqueScanIds)],
       ['Scans with duplicate log lines', num(d.scansWithDuplicateLines)],
       ['Duplicate log lines', num(d.duplicateLogLines)],
-      ['Incomplete scans (a stage missing)', num(d.incompleteScans)],
+      ['Incomplete scans (a scan stage missing)', num(d.incompleteScans)],
+      ['Scans with a gate decision line', num(d.scansWithDecisionLine)],
+      ['Scans with an outcome line', num(d.scansWithOutcomeLine)],
+      ['Decisions with no outcome (buffer rolled?)', num(d.decisionsWithoutOutcome)],
       ['Malformed log lines', num(d.malformedLogLines)],
       ['Ground-truth records supplied', num(d.annotationsSupplied)],
       ['Ground-truth records rejected', num(d.annotationsRejected)],
       ['Ground-truth records duplicated', num(d.annotationsDuplicated)],
       ['Ground-truth records with no matching scan', num(d.annotationsWithoutMatchingScan)],
-      ['Scans lacking ground truth', num(d.scansWithoutGroundTruth)],
+      ['Date errors with no truth date supplied', num(d.dateErrorsWithoutSuppliedTruth)],
       ['Scans excluded from evaluation', num(d.excludedScans)],
     ]),
   );
@@ -128,6 +131,13 @@ export function renderReport(r) {
     ]),
   );
 
+  if (Object.keys(c.advisoryReasons).length > 0) {
+    out.push('');
+    out.push('**Advisory reasons** (recorded by the gate, never blocking)');
+    out.push('');
+    out.push(histogram(c.advisoryReasons, 'none'));
+  }
+
   out.push('');
   out.push('## Would-be accept accuracy');
   out.push('');
@@ -139,6 +149,8 @@ export function renderReport(r) {
       ['Incorrect', num(a.falseAccepts)],
       ['Date exactly correct', num(a.dateCorrect)],
       ['Date incorrect', num(a.dateIncorrect)],
+      ['— of which the error size is known', num(a.dateErrorsWithKnownMagnitude)],
+      ['— of which the error size is unknown', num(a.dateErrorsWithUnknownMagnitude)],
       ['Item name measured', num(a.nameMeasured)],
       ['Item name correct', num(a.nameCorrect)],
       ['Item name incorrect', num(a.nameIncorrect)],
@@ -163,6 +175,7 @@ export function renderReport(r) {
       ['Earlier than truth', num(a.datesEarlierThanTruth)],
       ['Largest overshoot (later than truth)', `${num(e.maxDaysLater)} days`],
       ['Largest undershoot (earlier than truth)', `${num(e.maxDaysEarlier)} days`],
+      ['Errors of unknown size', num(e.magnitudeUnknown)],
     ]),
   );
   out.push('');
@@ -178,8 +191,8 @@ export function renderReport(r) {
   const dangerous = r.dangerousDateErrors;
   if (dangerous.count === 0) {
     out.push(
-      `No would-be accept proposed a date more than ${dangerous.thresholdDays} days later ` +
-        `than ground truth, across ${num(a.scoredAccepts)} scored accepts.`,
+      `No would-be accept was measured as proposing a date more than ${dangerous.thresholdDays} ` +
+        `days later than ground truth, across ${num(a.scoredAccepts)} scored accepts.`,
     );
     if (dangerous.oneSidedUpperBound !== null) {
       out.push('');
@@ -196,6 +209,35 @@ export function renderReport(r) {
     );
     out.push('');
     out.push(failureTable(dangerous.records));
+  }
+
+  if (dangerous.unmeasuredDateErrors > 0) {
+    out.push('');
+    out.push(
+      `**${dangerous.unmeasuredDateErrors} date error${dangerous.unmeasuredDateErrors === 1 ? '' : 's'} ` +
+        'of unknown size.** The outcome line records *that* the user corrected the date, never ' +
+        'what they corrected it to, so the size and direction of these errors cannot be ' +
+        'recovered from the logs. Any of them could be an overshoot beyond ' +
+        `${dangerous.thresholdDays} days.`,
+    );
+    out.push('');
+    out.push(
+      'Supply a `truthDate` for these `scanId`s in the ground-truth file and re-run:',
+    );
+    out.push('');
+    out.push('```json');
+    out.push(
+      JSON.stringify(
+        dangerous.unmeasuredRecords.map((x) => ({
+          scanId: x.scanId,
+          proposedDate: x.proposedDate,
+          truthDate: 'YYYY-MM-DD',
+        })),
+        null,
+        2,
+      ),
+    );
+    out.push('```');
   }
 
   out.push('');
@@ -270,14 +312,15 @@ export function renderReport(r) {
 
 function failureTable(records) {
   return [
-    '| scanId | Proposed | Truth | Δ days | Direction | Name ok | Gate | Reasons |',
-    '|---|---|---|---|---|---|---|---|',
+    '| scanId | Proposed | Truth | Δ days | Direction | Name ok | Printed | Format | Advisory |',
+    '|---|---|---|---|---|---|---|---|---|',
     ...records.map(
       (x) =>
-        `| \`${x.scanId}\` | ${x.proposedDate} | ${x.truthDate} | ` +
-        `${x.diffDays > 0 ? '+' : ''}${x.diffDays} | ${x.direction} | ` +
-        `${x.nameCorrect === null ? '—' : x.nameCorrect ? 'yes' : 'no'} | ` +
-        `${x.gateDecision} | ${x.gateReasons.length ? x.gateReasons.map((r) => `\`${r}\``).join(', ') : '—'} |`,
+        `| \`${x.scanId}\` | ${x.proposedDate ?? '—'} | ${x.truthDate ?? '—'} | ` +
+        `${x.diffDays === null ? '—' : `${x.diffDays > 0 ? '+' : ''}${x.diffDays}`} | ` +
+        `${x.direction} | ${x.nameCorrect === null ? '—' : x.nameCorrect ? 'yes' : 'no'} | ` +
+        `${x.sawText === null ? '—' : `\`${x.sawText}\``} | ${x.format ?? '—'} | ` +
+        `${x.advisory.length ? x.advisory.map((r) => `\`${r}\``).join(', ') : '—'} |`,
     ),
   ].join('\n');
 }
@@ -294,24 +337,37 @@ function limitations(r) {
   if (d.totalScansDiscovered === 0) {
     notes.push('**No scans were found in the supplied logs.** Nothing below is measured.');
   }
-  if (d.exclusionReasons['no-gate-decision'] > 0) {
+  if (a.dateErrorsWithUnknownMagnitude > 0) {
     notes.push(
-      `${d.exclusionReasons['no-gate-decision']} scan(s) carried no gate decision and could ` +
-        'not be evaluated. The app does not currently log one, so gate decisions must be ' +
-        'supplied in the ground-truth file — see `docs/scan-analysis.md`.',
+      `**${a.dateErrorsWithUnknownMagnitude} date error(s) of unknown size.** The outcome line ` +
+        'records that the date was corrected, not what it became, so the dangerous-overshoot ' +
+        'criterion cannot be settled without a `truthDate` supplied for each.',
     );
   }
-  if (d.scansWithoutGroundTruth > 0) {
+  if (d.decisionsWithoutOutcome > 0) {
     notes.push(
-      `${d.scansWithoutGroundTruth} scan(s) have no ground truth. User corrections are not ` +
-        'captured in the logs, so ground truth is supplied by hand and anything missing from ' +
-        'that file is simply unmeasured — not correct.',
+      `${d.decisionsWithoutOutcome} scan(s) reached a gate decision but no outcome line. These ` +
+        'lines live only in the Android log buffer, so a long or noisy session can roll them ' +
+        'away — dump promptly after each run.',
     );
   }
-  if (a.unscorableAccepts > 0) {
+  if (d.exclusionReasons['recognition-failed'] > 0) {
     notes.push(
-      `${a.unscorableAccepts} would-be accept(s) could not be scored and are excluded from ` +
-        'the rate. The rate describes the scored subset only.',
+      `${d.exclusionReasons['recognition-failed']} scan(s) were excluded because recognition ` +
+        'produced nothing usable. That is deliberate: a photograph of a bag of onions is not a ' +
+        'gate failure, and counting it would understate coverage for reasons unrelated to the gate.',
+    );
+  }
+  if (d.exclusionReasons['not-saved'] > 0) {
+    notes.push(
+      `${d.exclusionReasons['not-saved']} scan(s) were discarded or retaken rather than saved, ` +
+        'so the user never settled on a value and there is no ground truth for them.',
+    );
+  }
+  if (a.appFlagDisagreements > 0) {
+    notes.push(
+      `**${a.appFlagDisagreements} scan(s) where the app's own \`falseAccept\` flag disagrees ` +
+        "with this analysis.** That should not happen; investigate before trusting either number.",
     );
   }
   if (d.annotationsWithoutMatchingScan > 0) {
@@ -328,17 +384,22 @@ function limitations(r) {
   }
   if (a.nameMeasured < a.scoredAccepts) {
     notes.push(
-      `Item-name correctness was supplied for ${a.nameMeasured} of ${a.scoredAccepts} scored ` +
+      `Item-name correctness was measurable for ${a.nameMeasured} of ${a.scoredAccepts} scored ` +
         'accepts; the rest are scored on the date alone.',
     );
   }
   notes.push(
-    'The gate is measured as it behaved during collection. This report says nothing about ' +
-      'how it would behave after any change to it.',
+    'A scan waved through without correction is recorded as correct. The measurement rests on ' +
+      'the collector actually correcting everything that was wrong.',
   );
   notes.push(
-    'A pass here is evidence about a dataset, not authorisation to change product ' +
-      'behaviour. Mandatory Review & Save remains in force.',
+    'The gate is measured as it behaved during collection. This report says nothing about how ' +
+      'it would behave after any change to it, and re-running it after tuning the gate on this ' +
+      'same dataset measures the tuning, not the gate.',
+  );
+  notes.push(
+    'A pass here is evidence about a dataset, not authorisation to change product behaviour. ' +
+      'Mandatory Review & Save remains in force.',
   );
   return notes;
 }

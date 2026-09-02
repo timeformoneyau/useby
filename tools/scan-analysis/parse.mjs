@@ -1,19 +1,30 @@
 /**
  * Reading what a device testing session actually produced.
  *
- * Two inputs, because the app currently emits only one of them.
+ * The app writes two families of line, both one JSON object per scan stage and
+ * both keyed by `scanId`:
  *
- * The logs are the `useby.scan` lines described in the README — one `capture`
- * line and one `request` line per scan, joined on `scanId`. That is a real,
- * shipped contract and this module reads it as it is rather than as anyone
- * would like it to be.
+ *   useby.scan   capture | request   the camera and the round trip
+ *   useby.trust  decision | outcome  what the shadow gate would have done,
+ *                                    and what the person then actually did
  *
- * The annotations file is everything the logs deliberately do not carry. The
- * diagnostic design excludes item names on purpose (they are the contents of
- * someone's fridge) and the app has never logged the user's corrections at all,
- * so ground truth cannot come from the device. It is supplied by hand, per
- * scanId, in the shape `readAnnotations` accepts. `docs/scan-analysis.md` is
- * the contract; see also the measurement gap recorded there.
+ * The `useby.trust` pair is the measurement. The `decision` line carries the
+ * verdict, every blocking and advisory reason, the printed characters the model
+ * reported, and both routes' reading of them. The `outcome` line, written at
+ * Save, Discard or Retake, carries what the user changed. A verdict alone proves
+ * nothing and a correction alone says nothing about whether the gate would have
+ * caught it; the pair is what answers the question.
+ *
+ * The `useby.scan` lines are read too, for dataset integrity — a scan whose
+ * capture line exists but whose trust lines never arrived is a different problem
+ * from one that was never attempted.
+ *
+ * One thing is genuinely not in the logs: the corrected date itself. The outcome
+ * line records `dateChanged` as a boolean, never the value, so *whether* a
+ * would-be accept was wrong is measurable from the export alone but *by how many
+ * days, and in which direction* is not. That is what the annotations file is
+ * for, and it is only ever needed for the scans that were actually wrong. See
+ * `docs/scan-analysis.md`.
  *
  * Nothing here throws on bad input. A testing session is expensive to collect
  * and a parser that dies on line 300 of 400 would waste it — every problem
@@ -23,8 +34,14 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** The marker `scanTrace` writes. Everything before it on the line is logcat's. */
-const MARKER = 'useby.scan ';
+/**
+ * The two markers the app writes. Everything before one on the line is logcat's
+ * own — timestamp, pid, tag — and everything after it is our JSON.
+ */
+const MARKERS = [
+  { marker: 'useby.trust ', kind: 'trust', stages: ['decision', 'outcome'] },
+  { marker: 'useby.scan ', kind: 'scan', stages: ['capture', 'request'] },
+];
 
 /** The id shape the app mints and the proxy validates. Restated, not imported: */
 /* this file must stay runnable with no app code loaded at all. */
@@ -76,11 +93,13 @@ export function readLogLines(text, source = '<input>') {
   const malformed = [];
 
   text.split(/\r?\n/).forEach((line, index) => {
-    const at = line.indexOf(MARKER);
-    if (at === -1) return;
+    const found = MARKERS.map((m) => ({ ...m, at: line.indexOf(m.marker) })).find(
+      (m) => m.at !== -1,
+    );
+    if (found === undefined) return;
 
-    const where = { source, line: index + 1 };
-    const raw = line.slice(at + MARKER.length).trim();
+    const where = { source, line: index + 1, kind: found.kind };
+    const raw = line.slice(found.at + found.marker.length).trim();
 
     let parsed;
     try {
@@ -97,38 +116,90 @@ export function readLogLines(text, source = '<input>') {
       malformed.push({ ...where, problem: 'missing-or-invalid-scanId' });
       return;
     }
-    if (parsed.stage !== 'capture' && parsed.stage !== 'request') {
+    if (!found.stages.includes(parsed.stage)) {
       malformed.push({ ...where, problem: 'unknown-stage', scanId: parsed.scanId });
       return;
     }
-    entries.push({ ...where, entry: parsed });
+    entries.push({ ...where, stage: parsed.stage, entry: parsed });
   });
 
   return { entries, malformed };
 }
 
+/** The three verdicts the shadow gate can reach. `none` means it never ran. */
+const VERDICTS = ['auto_accept', 'review', 'failed'];
+
 /**
- * Read the gate's verdict off a request line, if one is there.
+ * Read the gate's verdict off a `decision` line.
  *
- * Nothing in the app writes this today — the shadow trust engine this harness
- * was built to measure does not exist in this repository yet (see
- * `docs/scan-analysis.md`). The reader is here so that when the engine does log
- * a decision into the request line, the harness picks it up with no change;
- * until then every gate decision arrives through the annotations file instead.
+ * `blocking` is what the gate rejected on and `advisory` is what it merely
+ * noted; they are kept apart because collapsing them would put reasons that
+ * never blocked anything into the rejection histogram, which is the output that
+ * says where future work would pay.
  *
- * Kept deliberately small and tolerant: if the eventual implementation names
- * things differently, this one function is what changes.
+ * Defensive about types throughout: these lines are read back from a log buffer
+ * that may have been truncated mid-write, and a half-line that still parses as
+ * JSON is not impossible.
  */
-export function readGate(entry) {
-  const gate = entry?.gate ?? entry?.trust;
-  if (typeof gate !== 'object' || gate === null) return null;
-  const decision =
-    gate.decision === 'accept' || gate.decision === 'reject' ? gate.decision : null;
-  if (decision === null) return null;
-  const reasons = Array.isArray(gate.reasons)
-    ? gate.reasons.filter((r) => typeof r === 'string' && r.length > 0).map((r) => r.slice(0, 60))
-    : [];
-  return { decision, reasons, origin: 'log' };
+export function readDecision(entry) {
+  if (typeof entry !== 'object' || entry === null) return null;
+  if (!VERDICTS.includes(entry.verdict)) return null;
+
+  const reasons = (value) =>
+    Array.isArray(value)
+      ? value.filter((r) => typeof r === 'string' && r.length > 0).map((r) => r.slice(0, 60))
+      : [];
+
+  const iso = (value) => (typeof value === 'string' && isIsoDate(value) ? value : null);
+
+  return {
+    verdict: entry.verdict,
+    blocking: reasons(entry.blocking),
+    advisory: reasons(entry.advisory),
+    // What the editor was prefilled with. `derivedIso` is the rules' own
+    // reading of the same characters, kept beside it because a disagreement
+    // between the two is itself a blocking reason (PARSE_MISMATCH).
+    modelIso: iso(entry.modelIso),
+    derivedIso: iso(entry.derivedIso),
+    format: typeof entry.format === 'string' ? entry.format : null,
+    // Printed characters, not personal data — the packaging said them. These
+    // are the whole evidence base for diagnosing a rejection.
+    sawText: typeof entry.sawText === 'string' ? entry.sawText : null,
+    sawLabel: typeof entry.sawLabel === 'string' ? entry.sawLabel : null,
+    others: Number.isInteger(entry.others) ? entry.others : null,
+    hasName: Number.isInteger(entry.nameLen) ? entry.nameLen > 0 : null,
+  };
+}
+
+/** The three ways a scan ends, all informative. */
+const ACTIONS = ['saved', 'discarded', 'retaken'];
+
+/**
+ * Read what the user actually did off an `outcome` line.
+ *
+ * The correction flags are only written on a save — there is nothing to compare
+ * against when a draft is discarded or retaken — so they are read as
+ * `undefined` rather than `false` on those, which is the difference between
+ * "they changed nothing" and "there was nothing to change".
+ */
+export function readOutcome(entry) {
+  if (typeof entry !== 'object' || entry === null) return null;
+  if (!ACTIONS.includes(entry.action)) return null;
+
+  const flag = (value) => (typeof value === 'boolean' ? value : undefined);
+
+  return {
+    action: entry.action,
+    verdict: VERDICTS.includes(entry.verdict) ? entry.verdict : null,
+    dateChanged: flag(entry.dateChanged),
+    dateSupplied: flag(entry.dateSupplied),
+    nameChanged: flag(entry.nameChanged),
+    typeChanged: flag(entry.typeChanged),
+    // The app computes this itself, as `auto_accept && dateChanged`. Read for
+    // cross-checking rather than relied on: it does not count a corrected item
+    // name, and this harness does.
+    falseAccept: flag(entry.falseAccept),
+  };
 }
 
 /**
@@ -142,15 +213,24 @@ export function readGate(entry) {
  */
 export function joinScans(entries) {
   const scans = new Map();
-  for (const { entry, source, line } of entries) {
+  const SLOTS = { capture: 'capture', request: 'request', decision: 'decision', outcome: 'outcome' };
+
+  for (const { entry, stage, source, line } of entries) {
     let scan = scans.get(entry.scanId);
     if (!scan) {
-      scan = { scanId: entry.scanId, capture: null, request: null, duplicates: [] };
+      scan = {
+        scanId: entry.scanId,
+        capture: null,
+        request: null,
+        decision: null,
+        outcome: null,
+        duplicates: [],
+      };
       scans.set(entry.scanId, scan);
     }
-    const slot = entry.stage === 'capture' ? 'capture' : 'request';
+    const slot = SLOTS[stage];
     if (scan[slot] === null) scan[slot] = { entry, source, line };
-    else scan.duplicates.push({ stage: entry.stage, source, line });
+    else scan.duplicates.push({ stage, source, line });
   }
   // Sorted by id, which is time-ordered by construction, so two runs over the
   // same logs produce byte-identical output.
@@ -178,11 +258,21 @@ export function loadLogs(paths) {
 /**
  * Validate one hand-supplied annotation.
  *
- * The fields are the minimum needed to score a scan, and the omissions are
- * deliberate. There is no item-name field: the app's diagnostics avoid item
- * names by design and this tool is not the place to reintroduce them, so name
- * accuracy is supplied as a boolean somebody has already decided. A record that
- * carries a name anyway has it dropped, not stored.
+ * Most of a session needs none of these. The logs already say whether a
+ * would-be accept was wrong — `dateChanged` on the outcome line — so coverage,
+ * the rejection histogram and the false-accept rate all come straight off the
+ * export. What the logs never record is the corrected *value*, so the size and
+ * direction of an error are not recoverable from them.
+ *
+ * That makes this file small by design: it is needed only for the scans that
+ * were actually wrong, to supply the date the user settled on. Everything else
+ * is optional and exists for overriding or for datasets collected before some
+ * part of the instrumentation existed.
+ *
+ * There is deliberately no item-name field. The app's diagnostics record name
+ * length and a changed/unchanged boolean, never the text — that is the contents
+ * of someone's fridge — and this harness does not become the place it
+ * reappears. A record carrying a name has it dropped, not stored.
  */
 export function validateAnnotation(record, index) {
   const where = { index };
@@ -212,11 +302,12 @@ export function validateAnnotation(record, index) {
     return { ok: false, ...id, problem: 'invalid-nameCorrect' };
   }
 
-  let gate = null;
-  if (record.gate !== undefined && record.gate !== null) {
-    gate = readGate({ gate: record.gate });
-    if (gate === null) return { ok: false, ...id, problem: 'invalid-gate' };
-    gate = { ...gate, origin: 'annotation' };
+  // A verdict may be supplied for a dataset whose decision lines were lost, but
+  // it must be one the gate can actually reach.
+  let verdict = null;
+  if (record.verdict !== undefined && record.verdict !== null) {
+    if (!VERDICTS.includes(record.verdict)) return { ok: false, ...id, problem: 'invalid-verdict' };
+    verdict = record.verdict;
   }
 
   return {
@@ -225,7 +316,7 @@ export function validateAnnotation(record, index) {
     truthDate: truth.value,
     proposedDate: proposed.value,
     nameCorrect: record.nameCorrect,
-    gate,
+    verdict,
   };
 }
 

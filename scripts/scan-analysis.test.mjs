@@ -10,8 +10,14 @@
  * The second is the accounting. Every scan the harness is given has to come out
  * somewhere — evaluated, excluded with a reason, or counted as malformed — and
  * the tests below walk each of the ways a real device session goes wrong: a
- * truncated logcat buffer, a concatenated export, a scan whose two halves never
- * met, a row nobody wrote ground truth for.
+ * truncated logcat buffer, a concatenated export, a decision whose outcome line
+ * rolled out of the buffer, a corrected date whose corrected value nobody wrote
+ * down.
+ *
+ * The log format under test is the real one, taken from `trustTrace` and its two
+ * call sites on `claude/capture-context-loss-spike-2ivfmb`, not from a
+ * description of it. Verdicts are `auto_accept | review | failed` and outcome
+ * actions are `saved | discarded | retaken`, because that is what the app emits.
  */
 
 import { test } from 'node:test';
@@ -32,7 +38,9 @@ import {
   isIsoDate,
   joinScans,
   readAnnotations,
+  readDecision,
   readLogLines,
+  readOutcome,
   loadLogs,
   loadAnnotations,
 } from '../tools/scan-analysis/parse.mjs';
@@ -51,33 +59,79 @@ const close = (actual, expected, tolerance = 1e-9) =>
   );
 
 // ---------------------------------------------------------------------------
-// Builders. A scan is two log lines; the tests only ever vary what matters.
+// Builders, emitting the real line format: two `useby.scan` lines and two
+// `useby.trust` lines per scan, exactly as the app writes them.
 // ---------------------------------------------------------------------------
 
 let counter = 0;
 const nextId = () => `p-test${String(++counter).padStart(4, '0')}-aaaa`;
 
-function scanLines(scanId, { outcome = 'ok', read = 'both', type = 'use_by' } = {}) {
-  return [
-    `09-01 14:00:00.000 1 1 I ReactNativeJS: useby.scan ${JSON.stringify({
-      scanId,
-      stage: 'capture',
-      outcome: 'ok',
-      captureMs: 300,
-      resizeMs: 240,
-      kb: 280,
-    })}`,
-    `09-01 14:00:05.000 1 1 I ReactNativeJS: useby.scan ${JSON.stringify({
+const line = (kind, body) =>
+  `09-14 10:00:00.000  8213  8260 I ReactNativeJS: useby.${kind} ${JSON.stringify(body)}`;
+
+function scanLines(scanId, spec = {}) {
+  const lines = [
+    line('scan', { scanId, stage: 'capture', outcome: 'ok', captureMs: 300, resizeMs: 240, kb: 280 }),
+    line('scan', {
       scanId,
       stage: 'request',
       totalMs: 4800,
-      outcome,
+      outcome: 'ok',
       status: 200,
-      read,
-      type,
+      read: 'both',
+      type: 'use_by',
       checks: { name: false, date: false },
-    })}`,
+    }),
   ];
+
+  if (spec.verdict !== undefined) {
+    lines.push(
+      line('trust', {
+        scanId,
+        stage: 'decision',
+        verdict: spec.verdict,
+        blocking: spec.blocking ?? [],
+        advisory: spec.advisory ?? [],
+        sawText: spec.sawText ?? '14 SEP 26',
+        sawLabel: spec.sawLabel ?? 'USE BY',
+        others: spec.others ?? 0,
+        derivedIso: spec.proposedDate ?? null,
+        derivedType: 'use_by',
+        format: spec.format ?? 'named-month',
+        modelIso: spec.proposedDate ?? null,
+        modelType: 'use_by',
+        nameLen: spec.nameLen ?? 10,
+      }),
+    );
+  }
+
+  // `action: null` means the outcome line never made it — a rolled buffer.
+  // Distinct from omitting the key, which takes the default save.
+  const action =
+    spec.action === null
+      ? null
+      : (spec.action ?? (spec.verdict === undefined ? null : 'saved'));
+  if (action !== null) {
+    lines.push(
+      line('trust', {
+        scanId,
+        stage: 'outcome',
+        action,
+        verdict: spec.verdict ?? 'none',
+        blocking: spec.blocking ?? [],
+        ...(action === 'saved'
+          ? {
+              dateChanged: spec.dateChanged ?? false,
+              dateSupplied: spec.dateSupplied ?? false,
+              nameChanged: spec.nameChanged ?? false,
+              typeChanged: false,
+              falseAccept: spec.verdict === 'auto_accept' && (spec.dateChanged ?? false),
+            }
+          : {}),
+      }),
+    );
+  }
+  return lines;
 }
 
 /** Build a dataset from a compact description, one entry per scan. */
@@ -87,29 +141,27 @@ function dataset(specs, thresholds = {}) {
   for (const spec of specs) {
     const scanId = spec.scanId ?? nextId();
     lines.push(...scanLines(scanId, spec));
-    annotations.push({
-      scanId,
-      gate: { decision: spec.decision ?? 'accept', reasons: spec.reasons ?? [], origin: 'annotation' },
-      proposedDate: spec.proposedDate ?? null,
-      truthDate: spec.truthDate ?? null,
-      nameCorrect: spec.nameCorrect,
-    });
+    if (spec.truthDate !== undefined) {
+      annotations.push({ scanId, truthDate: spec.truthDate, proposedDate: null, verdict: null });
+    }
   }
-  const { scans, malformed } = (() => {
-    const read = readLogLines(lines.join('\n'), 'test');
-    return { scans: joinScans(read.entries), malformed: read.malformed };
-  })();
-  return analyse({ scans, annotations, malformedLogLines: malformed, thresholds, now: NOW });
+  const read = readLogLines(lines.join('\n'), 'test');
+  return analyse({
+    scans: joinScans(read.entries),
+    annotations,
+    malformedLogLines: read.malformed,
+    thresholds,
+    now: NOW,
+  });
 }
 
 /** N identical, perfectly correct would-be accepts. */
 const cleanRun = (n, thresholds = {}) =>
   dataset(
     Array.from({ length: n }, () => ({
-      decision: 'accept',
+      verdict: 'auto_accept',
       proposedDate: '2026-09-14',
-      truthDate: '2026-09-14',
-      nameCorrect: true,
+      dateChanged: false,
     })),
     thresholds,
   );
@@ -205,25 +257,41 @@ test('1. a clean correct auto-accept is counted as correct', () => {
   assert.equal(r.accuracy.falseAccepts, 0);
   assert.equal(r.accuracy.errorDistribution.exact, 1);
   assert.equal(r.falseAcceptRate.observed, 0);
+  // No annotation was supplied and none was needed: the logs said it was right.
+  assert.equal(r.dataset.annotationsSupplied, 0);
 });
 
 test('2. a rejected scan is coverage, not accuracy', () => {
   const r = dataset([
-    { decision: 'reject', reasons: ['date-confidence-below-high'], truthDate: '2026-09-14' },
+    { verdict: 'review', blocking: ['AMBIGUOUS_DATE'], proposedDate: '2026-09-14', dateChanged: true },
   ]);
   assert.equal(r.coverage.evaluableScans, 1);
   assert.equal(r.coverage.wouldBeAutoAccepted, 0);
   assert.equal(r.coverage.rejected, 1);
   assert.equal(r.coverage.rejectionRate, 1);
   assert.equal(r.coverage.autoAcceptCoverage, 0);
-  // A rejection can never be a false accept, however wrong the read was.
+  // The gate caught a wrong date. That is the gate working, not a false accept.
   assert.equal(r.accuracy.scoredAccepts, 0);
+  assert.equal(r.accuracy.falseAccepts, 0);
 });
 
-test('3. an incorrect would-be accept is a false accept', () => {
+test('2b. a failed recognition is kept out of the coverage denominator', () => {
+  // The engine keeps `failed` distinct from `review` on purpose: a photograph
+  // of a bag of onions is not a gate failure, and counting it as one would
+  // understate coverage for reasons unrelated to the gate.
   const r = dataset([
-    { decision: 'accept', proposedDate: '2026-09-14', truthDate: '2026-09-14', nameCorrect: true },
-    { decision: 'accept', proposedDate: '2026-09-19', truthDate: '2026-09-14', nameCorrect: true },
+    { verdict: 'auto_accept', proposedDate: '2026-09-14', dateChanged: false },
+    { verdict: 'failed', blocking: ['NO_DATE_READ', 'NO_DATE_TEXT'], dateSupplied: true },
+  ]);
+  assert.equal(r.coverage.evaluableScans, 1);
+  assert.equal(r.coverage.autoAcceptCoverage, 1);
+  assert.equal(r.dataset.exclusionReasons['recognition-failed'], 1);
+});
+
+test('3. a corrected date on an auto-accept is a false accept', () => {
+  const r = dataset([
+    { verdict: 'auto_accept', proposedDate: '2026-09-14', dateChanged: false },
+    { verdict: 'auto_accept', proposedDate: '2026-09-19', dateChanged: true, truthDate: '2026-09-14' },
   ]);
   assert.equal(r.accuracy.falseAccepts, 1);
   assert.equal(r.accuracy.dateIncorrect, 1);
@@ -232,20 +300,22 @@ test('3. an incorrect would-be accept is a false accept', () => {
   assert.equal(r.incorrectAccepts[0].diffDays, 5);
 });
 
-test('3b. a right date under a wrong name is still a false accept', () => {
+test('3b. a right date under a corrected name is still a false accept', () => {
   // The gate would commit the whole row without review, so the name counts.
+  // The app's own falseAccept flag is date-only; the report carries both.
   const r = dataset([
-    { decision: 'accept', proposedDate: '2026-09-14', truthDate: '2026-09-14', nameCorrect: false },
+    { verdict: 'auto_accept', proposedDate: '2026-09-14', dateChanged: false, nameChanged: true },
   ]);
   assert.equal(r.accuracy.dateCorrect, 1);
   assert.equal(r.accuracy.nameIncorrect, 1);
   assert.equal(r.accuracy.falseAccepts, 1);
+  assert.equal(r.accuracy.appFlagDisagreements, 0);
   assert.equal(r.safetyBar.criteria[0].result, 'FAIL');
 });
 
 test('4. a date later than truth is recorded in the dangerous direction', () => {
   const r = dataset([
-    { decision: 'accept', proposedDate: '2026-09-19', truthDate: '2026-09-14', nameCorrect: true },
+    { verdict: 'auto_accept', proposedDate: '2026-09-19', dateChanged: true, truthDate: '2026-09-14' },
   ]);
   assert.equal(r.accuracy.datesLaterThanTruth, 1);
   assert.equal(r.accuracy.datesEarlierThanTruth, 0);
@@ -255,7 +325,7 @@ test('4. a date later than truth is recorded in the dangerous direction', () => 
 
 test('5. a date more than 30 days later than truth fails its own criterion', () => {
   const r = dataset([
-    { decision: 'accept', proposedDate: '2026-10-25', truthDate: '2026-09-10', nameCorrect: true },
+    { verdict: 'auto_accept', proposedDate: '2026-10-25', dateChanged: true, truthDate: '2026-09-10' },
   ]);
   assert.equal(r.dangerousDateErrors.count, 1);
   assert.equal(r.dangerousDateErrors.records[0].diffDays, 45);
@@ -265,30 +335,50 @@ test('5. a date more than 30 days later than truth fails its own criterion', () 
 });
 
 test('5b. exactly 30 days later is not yet dangerous, 31 is', () => {
-  // The boundary is worth pinning: the bar says "more than 30 days".
-  const at30 = dataset([
-    { decision: 'accept', proposedDate: '2026-10-10', truthDate: '2026-09-10', nameCorrect: true },
-  ]);
+  // The bar says "more than 30 days", so the boundary is worth pinning.
   assert.equal(dayDifference('2026-09-10', '2026-10-10'), 30);
+  const at30 = dataset([
+    { verdict: 'auto_accept', proposedDate: '2026-10-10', dateChanged: true, truthDate: '2026-09-10' },
+  ]);
   assert.equal(at30.dangerousDateErrors.count, 0);
 
   const at31 = dataset([
-    { decision: 'accept', proposedDate: '2026-10-11', truthDate: '2026-09-10', nameCorrect: true },
+    { verdict: 'auto_accept', proposedDate: '2026-10-11', dateChanged: true, truthDate: '2026-09-10' },
   ]);
   assert.equal(at31.dangerousDateErrors.count, 1);
 });
 
+test('5c. a date error of unknown size blocks the dangerous criterion', () => {
+  // The outcome line says the date was corrected but never what to. Until a
+  // truth date is supplied, that error could be an overshoot of any size, so
+  // the criterion must not report PASS.
+  const r = dataset([
+    { verdict: 'auto_accept', proposedDate: '2026-09-14', dateChanged: true },
+  ]);
+  assert.equal(r.accuracy.dateErrorsWithUnknownMagnitude, 1);
+  assert.equal(r.accuracy.dateErrorsWithKnownMagnitude, 0);
+  assert.equal(r.dangerousDateErrors.count, 0);
+  assert.equal(r.dangerousDateErrors.unmeasuredDateErrors, 1);
+
+  const criterion = r.safetyBar.criteria.find((c) => c.id === 'no-dangerous-late-accepts');
+  assert.equal(criterion.result, 'INSUFFICIENT_EVIDENCE');
+  assert.match(criterion.reason, /corrected value is not in the logs/);
+
+  // The report hands back a fill-in-the-blank stub rather than a scolding.
+  const markdown = renderReport(r);
+  assert.match(markdown, /"truthDate": "YYYY-MM-DD"/);
+});
+
 test('6. a date earlier than truth is wrong but not dangerous', () => {
   const r = dataset([
-    { decision: 'accept', proposedDate: '2026-08-01', truthDate: '2026-09-14', nameCorrect: true },
+    { verdict: 'auto_accept', proposedDate: '2026-08-01', dateChanged: true, truthDate: '2026-09-14' },
   ]);
   assert.equal(r.accuracy.datesEarlierThanTruth, 1);
   assert.equal(r.accuracy.errorDistribution.maxDaysEarlier, 44);
   assert.equal(r.accuracy.errorDistribution.over30Days, 1);
-  // Wrong enough to breach the rate, but not a dangerous overshoot.
+  // Wrong enough to breach the rate, and still not a dangerous overshoot.
   assert.equal(r.dangerousDateErrors.count, 0);
   assert.equal(r.safetyBar.criteria[0].result, 'FAIL');
-  assert.equal(r.safetyBar.criteria[1].result, 'INSUFFICIENT_EVIDENCE');
 });
 
 test('7. a small clean sample is INSUFFICIENT EVIDENCE, not PASS', () => {
@@ -326,10 +416,10 @@ test('8b. a large sample with one error is judged on the bound, not the point es
   // one-sided upper bound is 0.95%, so this must not read as PASS. Judging on
   // the point estimate alone is exactly the mistake the tool exists to avoid.
   const specs = Array.from({ length: 500 }, (_, i) => ({
-    decision: 'accept',
+    verdict: 'auto_accept',
     proposedDate: i === 0 ? '2026-09-16' : '2026-09-14',
-    truthDate: '2026-09-14',
-    nameCorrect: true,
+    dateChanged: i === 0,
+    ...(i === 0 ? { truthDate: '2026-09-14' } : {}),
   }));
   const r = dataset(specs);
   assert.equal(r.accuracy.falseAccepts, 1);
@@ -342,10 +432,10 @@ test('8b. a large sample with one error is judged on the bound, not the point es
 
 test('9. a threshold breach fails on the observed rate alone', () => {
   const specs = Array.from({ length: 100 }, (_, i) => ({
-    decision: 'accept',
+    verdict: 'auto_accept',
     proposedDate: i < 5 ? '2026-09-16' : '2026-09-14',
-    truthDate: '2026-09-14',
-    nameCorrect: true,
+    dateChanged: i < 5,
+    ...(i < 5 ? { truthDate: '2026-09-14' } : {}),
   }));
   const r = dataset(specs);
   close(r.falseAcceptRate.observed, 0.05);
@@ -358,17 +448,17 @@ test('9. a threshold breach fails on the observed rate alone', () => {
 });
 
 test('10. a malformed record is counted, never discarded', () => {
-  const good = scanLines('p-good0001-aaaa');
   const lines = [
-    ...good,
-    'I ReactNativeJS: useby.scan {"scanId":"p-trunc001-aaaa","stage":"capture","captureMs":30',
-    'I ReactNativeJS: useby.scan ["not","an","object"]',
+    ...scanLines('p-good0001-aaaa', { verdict: 'auto_accept', proposedDate: '2026-09-14' }),
+    // A rolled buffer truncates mid-write; this is what that looks like.
+    'I ReactNativeJS: useby.trust {"scanId":"p-trunc001-aaaa","stage":"decision","verdi',
+    'I ReactNativeJS: useby.trust ["not","an","object"]',
     'I ReactNativeJS: useby.scan {"stage":"capture","outcome":"ok"}',
-    'I ReactNativeJS: useby.scan {"scanId":"p-weird001-aaaa","stage":"teleport"}',
+    'I ReactNativeJS: useby.trust {"scanId":"p-weird001-aaaa","stage":"teleport"}',
     'I ReactNativeJS: something else entirely, not ours at all',
   ];
   const read = readLogLines(lines.join('\n'), 'test');
-  assert.equal(read.entries.length, 2);
+  assert.equal(read.entries.length, 4);
   assert.equal(read.malformed.length, 4);
   assert.deepEqual(
     read.malformed.map((m) => m.problem).sort(),
@@ -377,7 +467,6 @@ test('10. a malformed record is counted, never discarded', () => {
 
   const r = analyse({
     scans: joinScans(read.entries),
-    annotations: [],
     malformedLogLines: read.malformed,
     now: NOW,
   });
@@ -385,52 +474,51 @@ test('10. a malformed record is counted, never discarded', () => {
   assert.equal(r.dataset.malformedLogLineReasons['unparseable-json'], 1);
   // The one good scan is still analysed; bad neighbours do not poison it.
   assert.equal(r.dataset.totalScansDiscovered, 1);
+  assert.equal(r.coverage.wouldBeAutoAccepted, 1);
 });
 
 test('11. a scan missing half its join is excluded with the reason why', () => {
-  const [capture, request] = scanLines('p-half0001-aaaa');
-  const captureOnly = readLogLines(capture, 'test');
-  const requestOnly = readLogLines(request, 'test');
+  // A decision with no outcome is the signature of a rolled buffer, and the
+  // most likely way a real session loses data.
+  const noOutcome = dataset([{ verdict: 'auto_accept', proposedDate: '2026-09-14', action: null }]);
+  assert.equal(noOutcome.dataset.exclusionReasons['no-outcome-line'], 1);
+  assert.equal(noOutcome.dataset.decisionsWithoutOutcome, 1);
+  assert.equal(noOutcome.coverage.evaluableScans, 0);
 
-  const noRequest = analyse({ scans: joinScans(captureOnly.entries), now: NOW });
-  assert.equal(noRequest.dataset.incompleteScans, 1);
-  assert.equal(noRequest.dataset.exclusionReasons['no-request-line'], 1);
-  assert.equal(noRequest.coverage.evaluableScans, 0);
-
-  const noCapture = analyse({ scans: joinScans(requestOnly.entries), now: NOW });
-  assert.equal(noCapture.dataset.exclusionReasons['no-capture-line'], 1);
+  // An outcome with no decision: the gate's verdict is simply not known.
+  const noDecision = dataset([{ action: 'saved' }]);
+  assert.equal(noDecision.dataset.exclusionReasons['no-decision-line'], 1);
 
   // A ground-truth row naming a scan that appears in no log is the other half
   // of the same problem, and is reported rather than counted as a scan.
   const orphan = analyse({
     scans: [],
-    annotations: [{ scanId: 'p-ghost001-aaaa', truthDate: '2026-09-14', proposedDate: null, gate: null }],
+    annotations: [{ scanId: 'p-ghost001-aaaa', truthDate: '2026-09-14', proposedDate: null, verdict: null }],
     now: NOW,
   });
   assert.equal(orphan.dataset.annotationsWithoutMatchingScan, 1);
 });
 
+test('11b. a discarded or retaken scan has no ground truth and is excluded', () => {
+  const r = dataset([
+    { verdict: 'review', blocking: ['AMBIGUOUS_DATE'], action: 'discarded' },
+    { verdict: 'review', blocking: ['DATE_TEXT_UNPARSEABLE'], action: 'retaken' },
+  ]);
+  assert.equal(r.dataset.exclusionReasons['not-saved'], 2);
+  assert.equal(r.coverage.evaluableScans, 0);
+});
+
 test('12. duplicate records are excluded, not counted twice', () => {
-  const lines = [...scanLines('p-dupe0001-aaaa'), ...scanLines('p-dupe0001-aaaa')];
+  const spec = { verdict: 'auto_accept', proposedDate: '2026-09-14' };
+  const lines = [...scanLines('p-dupe0001-aaaa', spec), ...scanLines('p-dupe0001-aaaa', spec)];
   const read = readLogLines(lines.join('\n'), 'test');
   const scans = joinScans(read.entries);
   assert.equal(scans.length, 1);
-  assert.equal(scans[0].duplicates.length, 2);
+  assert.equal(scans[0].duplicates.length, 4);
 
-  const r = analyse({
-    scans,
-    annotations: [
-      {
-        scanId: 'p-dupe0001-aaaa',
-        gate: { decision: 'accept', reasons: [], origin: 'annotation' },
-        proposedDate: '2026-09-14',
-        truthDate: '2026-09-14',
-      },
-    ],
-    now: NOW,
-  });
+  const r = analyse({ scans, now: NOW });
   assert.equal(r.dataset.uniqueScanIds, 1);
-  assert.equal(r.dataset.duplicateLogLines, 2);
+  assert.equal(r.dataset.duplicateLogLines, 4);
   assert.equal(r.dataset.exclusionReasons['duplicate-log-lines'], 1);
   assert.equal(r.coverage.evaluableScans, 0);
 
@@ -445,38 +533,55 @@ test('12. duplicate records are excluded, not counted twice', () => {
   assert.equal(notes.duplicates.length, 1);
 });
 
-test('13. an accept without ground truth is unscorable, not correct', () => {
+test('13. a wrong date with no supplied truth is unmeasured, not assumed small', () => {
   const r = dataset([
-    { decision: 'accept', proposedDate: '2026-09-14', truthDate: '2026-09-14', nameCorrect: true },
-    { decision: 'accept', proposedDate: '2026-09-14', truthDate: null },
+    { verdict: 'auto_accept', proposedDate: '2026-09-14', dateChanged: false },
+    { verdict: 'auto_accept', proposedDate: '2026-09-14', dateChanged: true },
   ]);
-  assert.equal(r.coverage.wouldBeAutoAccepted, 2);
-  assert.equal(r.accuracy.scoredAccepts, 1);
-  assert.equal(r.accuracy.unscorableAccepts, 1);
-  assert.equal(r.accuracy.unscorableReasons['no-ground-truth'], 1);
-  // The missing one is absent from the denominator rather than assumed good.
-  assert.equal(r.falseAcceptRate.denominator, 1);
-  assert.equal(r.dataset.scansWithoutGroundTruth, 1);
-
-  // An accept with truth but no proposed date is unscorable for its own reason.
-  const noProposal = dataset([
-    { decision: 'accept', proposedDate: null, truthDate: '2026-09-14' },
-  ]);
-  assert.equal(noProposal.accuracy.unscorableReasons['no-proposed-date'], 1);
+  // It still counts as a false accept — the logs are certain it was wrong.
+  assert.equal(r.accuracy.falseAccepts, 1);
+  close(r.falseAcceptRate.observed, 0.5);
+  // Only its size is unknown.
+  assert.equal(r.accuracy.dateErrorsWithUnknownMagnitude, 1);
+  assert.equal(r.dataset.dateErrorsWithoutSuppliedTruth, 1);
+  assert.equal(r.incorrectAccepts[0].direction, 'unmeasured');
+  assert.equal(r.incorrectAccepts[0].diffDays, null);
 });
 
-test('14. multiple rejection reasons are preserved, not collapsed', () => {
+test('13b. a date supplied rather than corrected is not a wrong date', () => {
+  // Recognition returned nothing and the user typed one in. Folding that
+  // together with a correction would inflate the error rate with cases the
+  // gate had already rejected.
   const r = dataset([
-    { decision: 'reject', reasons: ['item-name-missing', 'date-confidence-below-high'] },
-    { decision: 'reject', reasons: ['date-confidence-below-high'] },
-    { decision: 'reject', reasons: ['no-fields-read'] },
-    { decision: 'reject', reasons: [] },
+    { verdict: 'auto_accept', proposedDate: null, dateChanged: false, dateSupplied: true },
+  ]);
+  assert.equal(r.accuracy.scoredAccepts, 0);
+  assert.equal(r.accuracy.unscorableReasons['date-supplied-not-corrected'], 1);
+  assert.equal(r.accuracy.falseAccepts, 0);
+});
+
+test('14. multiple rejection reasons are preserved, and advisories kept apart', () => {
+  const r = dataset([
+    {
+      verdict: 'review',
+      blocking: ['AMBIGUOUS_DATE', 'LOW_DATE_CONFIDENCE'],
+      advisory: ['DATE_TYPE_UNKNOWN'],
+    },
+    { verdict: 'review', blocking: ['AMBIGUOUS_DATE'], advisory: ['LOW_NAME_CONFIDENCE'] },
+    { verdict: 'review', blocking: ['PARSE_MISMATCH'] },
+    { verdict: 'review', blocking: [] },
   ]);
   assert.deepEqual(r.coverage.rejectionReasons, {
-    'date-confidence-below-high': 2,
+    AMBIGUOUS_DATE: 2,
     '(unspecified)': 1,
-    'item-name-missing': 1,
-    'no-fields-read': 1,
+    LOW_DATE_CONFIDENCE: 1,
+    PARSE_MISMATCH: 1,
+  });
+  // Advisory reasons never blocked anything, so they must not appear in the
+  // histogram that says where coverage is being lost.
+  assert.deepEqual(r.coverage.advisoryReasons, {
+    DATE_TYPE_UNKNOWN: 1,
+    LOW_NAME_CONFIDENCE: 1,
   });
   assert.equal(r.coverage.rejected, 4);
 });
@@ -498,89 +603,74 @@ test('15. an empty dataset is insufficient evidence, and says so', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Contracts around the edges: conflicts, gate origin, and what must never leak.
+// Contracts around the edges: the real line shapes, conflicts, and leaks.
 // ---------------------------------------------------------------------------
 
-test('the log line\'s own evidence fields reach the failure record', () => {
-  // These come from the joined request line rather than the annotations, and
-  // they are what turns a row in the failure table back into a scan somebody
-  // can go and look at. A join that quietly dropped them would leave every
-  // diagnostic field null while every count stayed right, so they are pinned.
-  const lines = scanLines('p-evid0001-aaaa', { read: 'date-only', type: 'best_before' });
-  const scans = joinScans(readLogLines(lines.join('\n'), 'test').entries);
-  const r = analyse({
-    scans,
-    annotations: [
-      {
-        scanId: 'p-evid0001-aaaa',
-        gate: { decision: 'accept', reasons: [], origin: 'annotation' },
-        proposedDate: '2026-09-20',
-        truthDate: '2026-09-14',
-        nameCorrect: true,
-      },
-    ],
-    now: NOW,
+test('the decision and outcome readers hold to the shapes the app emits', () => {
+  // Taken from `trustTrace`'s call sites, not from a description of them.
+  const decision = readDecision({
+    scanId: 'p-x-a', stage: 'decision', verdict: 'review',
+    blocking: ['AMBIGUOUS_DATE'], advisory: ['DATE_TYPE_UNKNOWN'],
+    sawText: '04/09/26', sawLabel: null, others: 0,
+    derivedIso: '2026-09-04', derivedType: 'unknown', format: 'numeric-dmy',
+    modelIso: '2026-09-04', modelType: 'unknown', nameLen: 10,
   });
-  const [failure] = r.incorrectAccepts;
-  assert.equal(failure.scanId, 'p-evid0001-aaaa');
-  assert.equal(failure.read, 'date-only');
-  assert.equal(failure.dateType, 'best_before');
-  assert.deepEqual(failure.checks, { name: false, date: false });
-  assert.equal(failure.gateOrigin, 'annotation');
+  assert.equal(decision.verdict, 'review');
+  assert.deepEqual(decision.blocking, ['AMBIGUOUS_DATE']);
+  assert.deepEqual(decision.advisory, ['DATE_TYPE_UNKNOWN']);
+  assert.equal(decision.sawText, '04/09/26');
+  assert.equal(decision.modelIso, '2026-09-04');
+  assert.equal(decision.hasName, true);
+
+  const outcome = readOutcome({
+    scanId: 'p-x-a', stage: 'outcome', action: 'saved', verdict: 'review',
+    blocking: ['AMBIGUOUS_DATE'], dateChanged: true, dateSupplied: false,
+    nameChanged: false, typeChanged: false, falseAccept: false,
+  });
+  assert.equal(outcome.action, 'saved');
+  assert.equal(outcome.dateChanged, true);
+  assert.equal(outcome.falseAccept, false);
+
+  // A retake carries no correction flags — there was nothing to compare. They
+  // must read as undefined, not false: "nothing changed" and "there was nothing
+  // to change" are different facts.
+  const retaken = readOutcome({ action: 'retaken', verdict: 'review', replacedBy: 'p-y' });
+  assert.equal(retaken.action, 'retaken');
+  assert.equal(retaken.dateChanged, undefined);
+
+  // Verdicts and actions outside the app's vocabulary are refused outright.
+  assert.equal(readDecision({ verdict: 'accept' }), null);
+  assert.equal(readDecision({ verdict: 'auto_accept' }).verdict, 'auto_accept');
+  assert.equal(readOutcome({ action: 'binned' }), null);
+  // A date the app could not have written is not carried into the analysis.
+  assert.equal(readDecision({ verdict: 'auto_accept', modelIso: '2026-02-30' }).modelIso, null);
 });
 
-test('a gate decision logged by the app wins, and a conflict is not reconciled', () => {
-  const lines = [
-    `I ReactNativeJS: useby.scan ${JSON.stringify({ scanId: 'p-gate0001-aaaa', stage: 'capture', outcome: 'ok' })}`,
-    `I ReactNativeJS: useby.scan ${JSON.stringify({
-      scanId: 'p-gate0001-aaaa',
-      stage: 'request',
-      outcome: 'ok',
-      gate: { decision: 'accept', reasons: [] },
-    })}`,
-  ];
-  const scans = joinScans(readLogLines(lines.join('\n'), 'test').entries);
+test('an annotated verdict fills a gap but never overrides the log', () => {
+  const logged = dataset([{ verdict: 'auto_accept', proposedDate: '2026-09-14' }]);
+  assert.equal(logged.coverage.wouldBeAutoAccepted, 1);
 
-  const agreeing = analyse({
+  // Supplied where the log has none: usable.
+  const lines = scanLines('p-anno0001-aaaa', { action: 'saved' });
+  const scans = joinScans(readLogLines(lines.join('\n'), 'test').entries);
+  const supplied = analyse({
     scans,
-    annotations: [
-      {
-        scanId: 'p-gate0001-aaaa',
-        gate: { decision: 'accept', reasons: [], origin: 'annotation' },
-        proposedDate: '2026-09-14',
-        truthDate: '2026-09-14',
-      },
-    ],
+    annotations: [{ scanId: 'p-anno0001-aaaa', verdict: 'auto_accept', truthDate: null, proposedDate: null }],
     now: NOW,
   });
-  assert.equal(agreeing.coverage.wouldBeAutoAccepted, 1);
-  assert.equal(agreeing.incorrectAccepts.length, 0);
+  assert.equal(supplied.coverage.wouldBeAutoAccepted, 1);
 
+  // Contradicting the log: excluded, not reconciled.
+  const withDecision = joinScans(
+    readLogLines(scanLines('p-anno0002-aaaa', { verdict: 'auto_accept', proposedDate: '2026-09-14' }).join('\n'), 'test').entries,
+  );
   const conflicting = analyse({
-    scans,
-    annotations: [
-      {
-        scanId: 'p-gate0001-aaaa',
-        gate: { decision: 'reject', reasons: ['x'], origin: 'annotation' },
-        proposedDate: '2026-09-14',
-        truthDate: '2026-09-14',
-      },
-    ],
+    scans: withDecision,
+    annotations: [{ scanId: 'p-anno0002-aaaa', verdict: 'review', truthDate: null, proposedDate: null }],
     now: NOW,
   });
-  assert.equal(conflicting.dataset.exclusionReasons['gate-decision-conflict'], 1);
+  assert.equal(conflicting.dataset.exclusionReasons['verdict-conflict'], 1);
   assert.equal(conflicting.coverage.evaluableScans, 0);
-});
-
-test('a scan with no gate decision anywhere is excluded and explained', () => {
-  const scans = joinScans(readLogLines(scanLines('p-noga0001-aaaa').join('\n'), 'test').entries);
-  const r = analyse({
-    scans,
-    annotations: [{ scanId: 'p-noga0001-aaaa', truthDate: '2026-09-14', proposedDate: '2026-09-14', gate: null }],
-    now: NOW,
-  });
-  assert.equal(r.dataset.exclusionReasons['no-gate-decision'], 1);
-  assert.match(renderReport(r), /carried no gate decision/);
 });
 
 test('the annotations reader takes the three shapes and rejects bad rows by name', () => {
@@ -602,47 +692,103 @@ test('the annotations reader takes the three shapes and rejects bad rows by name
       { scanId: 'p-bad00001-aaaa', truthDate: '2026-02-30' },
       { scanId: 'p-bad00002-aaaa', proposedDate: 'soon' },
       { scanId: 'p-bad00003-aaaa', nameCorrect: 'yes' },
-      { scanId: 'p-bad00004-aaaa', gate: { decision: 'maybe' } },
+      { scanId: 'p-bad00004-aaaa', verdict: 'accept' },
       'not an object',
     ]),
   );
   assert.equal(bad.records.length, 1);
   assert.deepEqual(bad.rejected.map((r) => r.problem).sort(), [
-    'invalid-gate',
     'invalid-nameCorrect',
     'invalid-proposedDate',
     'invalid-truthDate',
+    'invalid-verdict',
     'missing-or-invalid-scanId',
     'not-an-object',
   ]);
 });
 
 test('an item name supplied by mistake is dropped, never carried into the output', () => {
-  // The diagnostics avoid item names on purpose. This harness must not become
-  // the place they reappear, even if somebody writes one into the file.
+  // The app records name length and a changed/unchanged boolean, never the
+  // text. This harness must not become the place item names reappear, even if
+  // somebody writes one into the file by hand.
   const notes = readAnnotations(
     JSON.stringify([
       {
         scanId: 'p-name0001-aaaa',
         truthDate: '2026-09-14',
-        proposedDate: '2026-09-20',
         itemName: 'Chicken thighs',
         truthName: 'Pork loin',
         nameCorrect: false,
-        gate: { decision: 'accept', reasons: [] },
       },
     ]),
   );
   assert.equal(notes.records[0].itemName, undefined);
   assert.equal(notes.records[0].truthName, undefined);
 
-  const scans = joinScans(readLogLines(scanLines('p-name0001-aaaa').join('\n'), 'test').entries);
+  const scans = joinScans(
+    readLogLines(
+      scanLines('p-name0001-aaaa', { verdict: 'auto_accept', proposedDate: '2026-09-20', dateChanged: true }).join('\n'),
+      'test',
+    ).entries,
+  );
   const r = analyse({ scans, annotations: notes.records, now: NOW });
   const serialised = JSON.stringify(r) + renderReport(r);
   assert.ok(!serialised.includes('Chicken'), 'item name leaked into the output');
   assert.ok(!serialised.includes('Pork'), 'item name leaked into the output');
   // The measurement it was supplied for still lands.
   assert.equal(r.accuracy.nameIncorrect, 1);
+});
+
+test('the printed characters reach the failure record, so a failure is diagnosable', () => {
+  // sawText and the two routes' readings are the whole evidence base for
+  // working out why a date was wrong. A join that dropped them would leave
+  // every diagnostic field null while every count stayed right.
+  const lines = scanLines('p-evid0001-aaaa', {
+    verdict: 'auto_accept',
+    proposedDate: '2026-09-04',
+    sawText: '04/09/26',
+    format: 'numeric-dmy',
+    advisory: ['DATE_TYPE_UNKNOWN'],
+    dateChanged: true,
+  });
+  const scans = joinScans(readLogLines(lines.join('\n'), 'test').entries);
+  const r = analyse({
+    scans,
+    annotations: [{ scanId: 'p-evid0001-aaaa', truthDate: '2026-04-09', proposedDate: null, verdict: null }],
+    now: NOW,
+  });
+  const [failure] = r.incorrectAccepts;
+  assert.equal(failure.scanId, 'p-evid0001-aaaa');
+  assert.equal(failure.sawText, '04/09/26');
+  assert.equal(failure.format, 'numeric-dmy');
+  assert.equal(failure.modelIso, '2026-09-04');
+  assert.deepEqual(failure.advisory, ['DATE_TYPE_UNKNOWN']);
+  // A day/month transposition: 148 days later than the truth, and dangerous.
+  assert.equal(failure.diffDays, 148);
+  assert.equal(r.dangerousDateErrors.count, 1);
+});
+
+test("a disagreement with the app's own falseAccept flag is surfaced", () => {
+  // The app computes falseAccept itself. If the two ever disagree, one of them
+  // is wrong about the run and that must not pass quietly.
+  const lines = [
+    line('trust', {
+      scanId: 'p-flag0001-aaaa', stage: 'decision', verdict: 'auto_accept',
+      blocking: [], advisory: [], sawText: '14 SEP 26', others: 0,
+      derivedIso: '2026-09-14', format: 'named-month', modelIso: '2026-09-14', nameLen: 8,
+    }),
+    line('trust', {
+      scanId: 'p-flag0001-aaaa', stage: 'outcome', action: 'saved', verdict: 'auto_accept',
+      blocking: [], dateChanged: true, dateSupplied: false, nameChanged: false,
+      typeChanged: false, falseAccept: false, // contradicts dateChanged
+    }),
+  ];
+  const r = analyse({
+    scans: joinScans(readLogLines(lines.join('\n'), 'test').entries),
+    now: NOW,
+  });
+  assert.equal(r.accuracy.appFlagDisagreements, 1);
+  assert.match(renderReport(r), /disagrees/);
 });
 
 test('the same input twice produces byte-identical output', () => {
@@ -678,22 +824,29 @@ test('the fixture session analyses to the counts it was built to produce', () =>
   assert.equal(r.dataset.totalScansDiscovered, 13);
   assert.equal(r.dataset.malformedLogLines, 1);
   assert.equal(r.dataset.scansWithDuplicateLines, 1);
-  assert.equal(r.dataset.incompleteScans, 2);
-  assert.equal(r.dataset.excludedScans, 3);
+  assert.equal(r.dataset.decisionsWithoutOutcome, 1);
+  assert.equal(r.dataset.excludedScans, 5);
+  assert.deepEqual(r.dataset.exclusionReasons, {
+    'not-saved': 2,
+    'duplicate-log-lines': 1,
+    'no-outcome-line': 1,
+    'recognition-failed': 1,
+  });
 
-  assert.equal(r.coverage.evaluableScans, 10);
-  assert.equal(r.coverage.wouldBeAutoAccepted, 7);
+  assert.equal(r.coverage.evaluableScans, 8);
+  assert.equal(r.coverage.wouldBeAutoAccepted, 5);
   assert.equal(r.coverage.rejected, 3);
-  close(r.coverage.autoAcceptCoverage, 0.7);
+  close(r.coverage.autoAcceptCoverage, 0.625);
 
-  assert.equal(r.accuracy.scoredAccepts, 6);
-  assert.equal(r.accuracy.falseAccepts, 4);
-  assert.equal(r.accuracy.datesLaterThanTruth, 2);
-  assert.equal(r.accuracy.datesEarlierThanTruth, 1);
+  assert.equal(r.accuracy.scoredAccepts, 5);
+  assert.equal(r.accuracy.falseAccepts, 3);
+  assert.equal(r.accuracy.dateErrorsWithKnownMagnitude, 1);
+  assert.equal(r.accuracy.dateErrorsWithUnknownMagnitude, 1);
   assert.equal(r.accuracy.nameIncorrect, 1);
+  assert.equal(r.accuracy.appFlagDisagreements, 0);
 
   assert.equal(r.dangerousDateErrors.count, 1);
-  assert.equal(r.dangerousDateErrors.records[0].scanId, 'p-mfk2a005-0005e');
+  assert.equal(r.dangerousDateErrors.records[0].scanId, 'p-mfk3a004-0004d');
   assert.equal(r.dangerousDateErrors.records[0].diffDays, 45);
   assert.equal(r.safetyBar.result, 'FAIL');
 });
@@ -726,16 +879,15 @@ test('the CLI writes both outputs and reports the verdict through its exit code'
   assert.equal(parsed.analysedAt, NOW.toISOString());
   assert.equal(parsed.safetyBar.result, 'FAIL');
   assert.equal(parsed.thresholds.maxFalseAcceptRate, 0.005);
-  assert.equal(parsed.inputs.groundTruthPath, join(FIXTURES, 'ground-truth.json'));
 
   const markdown = read(mdPath, 'utf8');
   assert.match(markdown, /\*\*Verdict: FAIL\*\*/);
   assert.match(markdown, /does not authorise turning exception-based review on/);
-  assert.match(markdown, /p-mfk2a005-0005e/);
+  assert.match(markdown, /p-mfk3a004-0004d/);
 
   // --strict turns the verdict into an exit code for later CI use.
   assert.equal(
-    main([join(FIXTURES, 'session-logcat.txt'), '--ground-truth', join(FIXTURES, 'ground-truth.json'), '--strict', '--quiet'], io),
+    main([join(FIXTURES, 'session-logcat.txt'), '--strict', '--quiet'], io),
     2,
   );
 });

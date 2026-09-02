@@ -16,7 +16,7 @@
  */
 
 import { clopperPearsonInterval, clopperPearsonUpperBound, cleanSampleSizeFor } from './stats.mjs';
-import { dayDifference, readGate } from './parse.mjs';
+import { dayDifference, readDecision, readOutcome } from './parse.mjs';
 
 export const TOOL = 'useby-scan-analysis';
 export const TOOL_VERSION = '1.0.0';
@@ -50,17 +50,27 @@ export const DEFAULT_THRESHOLDS = {
 /** Why a scan took no part in the evaluation. Each scan gets exactly one. */
 export const EXCLUSIONS = {
   DUPLICATE: 'duplicate-log-lines',
-  UNJOINED_NO_REQUEST: 'no-request-line',
-  UNJOINED_NO_CAPTURE: 'no-capture-line',
-  GATE_CONFLICT: 'gate-decision-conflict',
+  NO_DECISION: 'no-decision-line',
+  NO_OUTCOME: 'no-outcome-line',
+  /**
+   * The gate reached no decision because recognition produced nothing usable.
+   * Kept out of the coverage denominator on purpose: a photograph of a bag of
+   * onions is not a gate failure, and counting it as one would understate
+   * coverage for reasons that have nothing to do with the gate.
+   */
+  RECOGNITION_FAILED: 'recognition-failed',
+  /** Discarded or retaken. The user never settled on a value, so there is no truth. */
+  NOT_SAVED: 'not-saved',
+  VERDICT_CONFLICT: 'verdict-conflict',
   PROPOSAL_CONFLICT: 'proposed-date-conflict',
-  NO_GATE: 'no-gate-decision',
 };
 
 /** Why a would-be accept could not be scored for accuracy. */
 export const UNSCORABLE = {
-  NO_GROUND_TRUTH: 'no-ground-truth',
-  NO_PROPOSED_DATE: 'no-proposed-date',
+  /** The save carried no correction flags at all — a truncated outcome line. */
+  NO_CORRECTION_FLAGS: 'no-correction-flags',
+  /** Recognition returned no date and the user typed one. Not a wrong date. */
+  DATE_SUPPLIED_NOT_CORRECTED: 'date-supplied-not-corrected',
 };
 
 function tally(list) {
@@ -77,41 +87,44 @@ function rate(numerator, denominator) {
 }
 
 /**
- * Decide what one scan contributes, given its log record and its annotation.
+ * Decide what one scan contributes, given its log lines and any annotation.
  *
- * Where both sources carry the same field the log wins and the disagreement is
- * recorded — never quietly reconciled. A log line and a hand-written note
- * disagreeing about what the gate decided means one of them is wrong about the
- * run, and averaging over that would launder a bookkeeping error into a
- * measurement.
+ * Where both a log line and a hand-written note carry the same field the log
+ * wins and the disagreement is recorded — never quietly reconciled. The two
+ * disagreeing means one of them is wrong about the run, and averaging over that
+ * would launder a bookkeeping error into a measurement.
  */
 export function resolveScan(scan, annotation) {
-  const request = scan?.request?.entry ?? null;
+  const decision = scan.decision ? readDecision(scan.decision.entry) : null;
+  const outcome = scan.outcome ? readOutcome(scan.outcome.entry) : null;
 
-  const logGate = request ? readGate(request) : null;
-  const noteGate = annotation?.gate ?? null;
-  const gateConflict =
-    logGate !== null && noteGate !== null && logGate.decision !== noteGate.decision;
-  const gate = logGate ?? noteGate;
+  const noteVerdict = annotation?.verdict ?? null;
+  const verdictConflict =
+    decision !== null && noteVerdict !== null && decision.verdict !== noteVerdict;
+  const verdict = decision?.verdict ?? noteVerdict;
 
-  const logProposed = typeof request?.proposedDate === 'string' ? request.proposedDate : null;
+  // What the editor was actually prefilled with, which is what the gate would
+  // have committed. `derivedIso` is the rules' own reading and is only a
+  // fallback: on an auto_accept the two agree by construction, because a
+  // disagreement is itself a blocking reason.
+  const logProposed = decision?.modelIso ?? decision?.derivedIso ?? null;
   const noteProposed = annotation?.proposedDate ?? null;
   const proposedConflict =
     logProposed !== null && noteProposed !== null && logProposed !== noteProposed;
-  const proposedDate = logProposed ?? noteProposed;
 
   return {
     scanId: scan.scanId,
-    outcome: request?.outcome ?? scan?.capture?.entry?.outcome ?? null,
-    read: request?.read ?? null,
-    dateType: request?.type ?? null,
-    checks: request?.checks ?? null,
-    gate,
-    gateConflict,
-    proposedDate,
+    decision,
+    outcome,
+    verdict,
+    verdictConflict,
+    proposedDate: logProposed ?? noteProposed,
     proposedConflict,
     truthDate: annotation?.truthDate ?? null,
-    nameCorrect: annotation?.nameCorrect,
+    // The logs answer this themselves; an annotation only overrides.
+    nameCorrect:
+      annotation?.nameCorrect ??
+      (outcome?.nameChanged === undefined ? undefined : !outcome.nameChanged),
     duplicates: scan.duplicates ?? [],
     hasCapture: scan.capture !== null,
     hasRequest: scan.request !== null,
@@ -148,70 +161,115 @@ export function analyse({
   for (const scan of resolved) {
     const reason =
       scan.duplicates.length > 0 ? EXCLUSIONS.DUPLICATE
-      : !scan.hasRequest ? EXCLUSIONS.UNJOINED_NO_REQUEST
-      : !scan.hasCapture ? EXCLUSIONS.UNJOINED_NO_CAPTURE
-      : scan.gateConflict ? EXCLUSIONS.GATE_CONFLICT
+      : scan.verdictConflict ? EXCLUSIONS.VERDICT_CONFLICT
       : scan.proposedConflict ? EXCLUSIONS.PROPOSAL_CONFLICT
-      : scan.gate === null ? EXCLUSIONS.NO_GATE
+      : scan.verdict === null ? EXCLUSIONS.NO_DECISION
+      : scan.verdict === 'failed' ? EXCLUSIONS.RECOGNITION_FAILED
+      : scan.outcome === null ? EXCLUSIONS.NO_OUTCOME
+      : scan.outcome.action !== 'saved' ? EXCLUSIONS.NOT_SAVED
       : null;
 
     if (reason === null) evaluable.push(scan);
     else excluded.push({ scanId: scan.scanId, reason });
   }
 
-  const accepts = evaluable.filter((s) => s.gate.decision === 'accept');
-  const rejects = evaluable.filter((s) => s.gate.decision === 'reject');
+  const accepts = evaluable.filter((s) => s.verdict === 'auto_accept');
+  const rejects = evaluable.filter((s) => s.verdict === 'review');
 
   // Every reason a rejection carried, kept apart rather than collapsed: which
-  // rule is doing the rejecting is the whole question when the coverage number
-  // comes back too low. A rejection with no reason at all is named as such so
-  // the histogram still sums to something meaningful.
+  // rule is doing the rejecting is the whole question when coverage comes back
+  // too low, and a run that is 40% AMBIGUOUS_DATE calls for completely
+  // different work from one that is 40% NO_DATE_TEXT.
   const rejectionReasons = tally(
-    rejects.flatMap((s) => (s.gate.reasons.length > 0 ? s.gate.reasons : ['(unspecified)'])),
+    rejects.flatMap((s) =>
+      s.decision !== null && s.decision.blocking.length > 0
+        ? s.decision.blocking
+        : ['(unspecified)'],
+    ),
+  );
+  // Advisory reasons never blocked anything, so they are reported apart. Folding
+  // them in would put conditions that cost no coverage into the histogram that
+  // decides where coverage is being lost.
+  const advisoryReasons = tally(
+    evaluable.flatMap((s) => s.decision?.advisory ?? []),
   );
 
   // ---- Accuracy of the would-be accepts -----------------------------------
+  //
+  // This comes off the logs alone. The outcome line records whether the user
+  // corrected the date; a would-be accept they corrected is one the gate would
+  // have committed wrongly. The magnitude of that error is a separate question
+  // and needs the annotations file — see below.
 
   const unscorable = [];
   const scored = [];
 
   for (const scan of accepts) {
-    if (scan.truthDate === null) {
-      unscorable.push({ scanId: scan.scanId, reason: UNSCORABLE.NO_GROUND_TRUTH });
+    const { outcome } = scan;
+
+    if (outcome.dateChanged === undefined) {
+      unscorable.push({ scanId: scan.scanId, reason: UNSCORABLE.NO_CORRECTION_FLAGS });
       continue;
     }
-    if (scan.proposedDate === null) {
-      unscorable.push({ scanId: scan.scanId, reason: UNSCORABLE.NO_PROPOSED_DATE });
+    // Recognition returned no date and the user typed one in. That is not a
+    // corrected wrong date, and folding the two together would inflate the
+    // error rate with cases the gate had already rejected. An auto_accept
+    // cannot reach this state (NO_DATE_READ blocks), so it means a malformed
+    // pairing rather than a real outcome.
+    if (outcome.dateSupplied === true) {
+      unscorable.push({ scanId: scan.scanId, reason: UNSCORABLE.DATE_SUPPLIED_NOT_CORRECTED });
       continue;
     }
-    const diffDays = dayDifference(scan.truthDate, scan.proposedDate);
+
+    const dateCorrect = outcome.dateChanged === false;
+    const nameCorrect = scan.nameCorrect;
+
+    // Only measurable where the user's corrected value was supplied by hand:
+    // the outcome line records that the date changed, never what it changed to.
+    const diffDays =
+      !dateCorrect && scan.truthDate !== null && scan.proposedDate !== null
+        ? dayDifference(scan.truthDate, scan.proposedDate)
+        : null;
+
     scored.push({
       ...scan,
+      dateCorrect,
       diffDays,
-      dateCorrect: diffDays === 0,
+      magnitudeKnown: dateCorrect || diffDays !== null,
       // A would-be accept is false if anything it would have committed without
       // review is wrong — a right date under the wrong name is still a bad row
-      // in someone's fridge list.
-      correct: diffDays === 0 && scan.nameCorrect !== false,
+      // in someone's fridge list. The app's own `falseAccept` flag counts the
+      // date only; both are reported.
+      correct: dateCorrect && nameCorrect !== false,
     });
   }
 
   const nameMeasured = scored.filter((s) => typeof s.nameCorrect === 'boolean');
   const dateWrong = scored.filter((s) => !s.dateCorrect);
-  const later = dateWrong.filter((s) => s.diffDays > 0);
-  const earlier = dateWrong.filter((s) => s.diffDays < 0);
-  const dangerous = scored.filter((s) => s.diffDays > bar.dangerousLaterDays);
+  const measured = dateWrong.filter((s) => s.diffDays !== null);
+  const unmeasured = dateWrong.filter((s) => s.diffDays === null);
+  const later = measured.filter((s) => s.diffDays > 0);
+  const earlier = measured.filter((s) => s.diffDays < 0);
+  const dangerous = measured.filter((s) => s.diffDays > bar.dangerousLaterDays);
   const falseAccepts = scored.filter((s) => !s.correct);
+
+  // Where the app computed its own verdict on the same scan, it must agree.
+  // A mismatch means the harness and the app disagree about what happened, and
+  // that is worth surfacing rather than quietly preferring one of them.
+  const flagDisagreements = scored.filter(
+    (s) => s.outcome.falseAccept !== undefined && s.outcome.falseAccept !== !s.dateCorrect,
+  ).length;
 
   const abs = (s) => Math.abs(s.diffDays);
   const errorDistribution = {
-    exact: scored.filter((s) => s.diffDays === 0).length,
-    within1Day: scored.filter((s) => abs(s) > 0 && abs(s) <= 1).length,
-    over1Day: scored.filter((s) => abs(s) > 1).length,
-    over7Days: scored.filter((s) => abs(s) > 7).length,
-    over30Days: scored.filter((s) => abs(s) > 30).length,
+    exact: scored.filter((s) => s.dateCorrect).length,
+    within1Day: measured.filter((s) => abs(s) > 0 && abs(s) <= 1).length,
+    over1Day: measured.filter((s) => abs(s) > 1).length,
+    over7Days: measured.filter((s) => abs(s) > 7).length,
+    over30Days: measured.filter((s) => abs(s) > 30).length,
     maxDaysLater: later.length > 0 ? Math.max(...later.map((s) => s.diffDays)) : 0,
     maxDaysEarlier: earlier.length > 0 ? Math.max(...earlier.map((s) => -s.diffDays)) : 0,
+    magnitudeUnknown: unmeasured.length,
   };
 
   // ---- The bar -------------------------------------------------------------
@@ -225,9 +283,18 @@ export function analyse({
 
   const criteria = [
     falseAcceptCriterion({ n, k, observedRate, upperBound, bar }),
-    dangerousCriterion({ n, dangerous, upperBound: dangerousUpperBound, bar }),
+    dangerousCriterion({
+      n,
+      dangerous,
+      unmeasured: unmeasured.length,
+      upperBound: dangerousUpperBound,
+      bar,
+    }),
   ];
 
+  // Any breach fails the set; otherwise a criterion that could not be
+  // established holds the whole result back. A PASS means every criterion was
+  // positively demonstrated, not merely left unbreached.
   const result = criteria.some((c) => c.result === 'FAIL')
     ? 'FAIL'
     : criteria.some((c) => c.result === 'INSUFFICIENT_EVIDENCE')
@@ -241,14 +308,29 @@ export function analyse({
     proposedDate: s.proposedDate,
     truthDate: s.truthDate,
     diffDays: s.diffDays,
-    direction: s.diffDays > 0 ? 'later-than-truth' : s.diffDays < 0 ? 'earlier-than-truth' : 'exact',
+    direction:
+      s.diffDays === null
+        ? 'unmeasured'
+        : s.diffDays > 0
+          ? 'later-than-truth'
+          : s.diffDays < 0
+            ? 'earlier-than-truth'
+            : 'exact',
+    dateCorrect: s.dateCorrect,
     nameCorrect: s.nameCorrect ?? null,
-    gateDecision: s.gate.decision,
-    gateReasons: s.gate.reasons,
-    gateOrigin: s.gate.origin,
-    read: s.read,
-    dateType: s.dateType,
-    checks: s.checks,
+    verdict: s.verdict,
+    blocking: s.decision?.blocking ?? [],
+    advisory: s.decision?.advisory ?? [],
+    // The printed characters and both routes' reading of them. This is what
+    // makes a row in the failure table into something someone can diagnose:
+    // a date the model normalised differently from the rules, or a format the
+    // parser handled badly, shows up here and nowhere else.
+    sawText: s.decision?.sawText ?? null,
+    sawLabel: s.decision?.sawLabel ?? null,
+    otherDatesVisible: s.decision?.others ?? null,
+    derivedIso: s.decision?.derivedIso ?? null,
+    modelIso: s.decision?.modelIso ?? null,
+    format: s.decision?.format ?? null,
   });
 
   return {
@@ -265,6 +347,12 @@ export function analyse({
       duplicateLogLines: resolved.reduce((sum, s) => sum + s.duplicates.length, 0),
       scansWithDuplicateLines: resolved.filter((s) => s.duplicates.length > 0).length,
       incompleteScans: resolved.filter((s) => !s.hasCapture || !s.hasRequest).length,
+      scansWithDecisionLine: resolved.filter((s) => s.decision !== null).length,
+      scansWithOutcomeLine: resolved.filter((s) => s.outcome !== null).length,
+      // A decision with no outcome is the signature of a rolled log buffer or
+      // an app killed mid-session, and it is the most likely way a real run
+      // loses data.
+      decisionsWithoutOutcome: resolved.filter((s) => s.decision !== null && s.outcome === null).length,
       malformedLogLines: malformedLogLines.length,
       malformedLogLineReasons: tally(malformedLogLines.map((m) => m.problem)),
       annotationsSupplied: annotations.length,
@@ -272,7 +360,7 @@ export function analyse({
       annotationRejectionReasons: tally(rejectedAnnotations.map((r) => r.problem)),
       annotationsDuplicated: duplicateAnnotations.length,
       annotationsWithoutMatchingScan: orphanAnnotations.length,
-      scansWithoutGroundTruth: resolved.filter((s) => s.truthDate === null).length,
+      dateErrorsWithoutSuppliedTruth: unmeasured.length,
       excludedScans: excluded.length,
       exclusionReasons: tally(excluded.map((e) => e.reason)),
     },
@@ -284,6 +372,7 @@ export function analyse({
       autoAcceptCoverage: rate(accepts.length, evaluable.length),
       rejectionRate: rate(rejects.length, evaluable.length),
       rejectionReasons,
+      advisoryReasons,
     },
 
     accuracy: {
@@ -294,11 +383,14 @@ export function analyse({
       falseAccepts: k,
       dateCorrect: n - dateWrong.length,
       dateIncorrect: dateWrong.length,
+      dateErrorsWithKnownMagnitude: measured.length,
+      dateErrorsWithUnknownMagnitude: unmeasured.length,
       datesLaterThanTruth: later.length,
       datesEarlierThanTruth: earlier.length,
       nameMeasured: nameMeasured.length,
       nameCorrect: nameMeasured.filter((s) => s.nameCorrect === true).length,
       nameIncorrect: nameMeasured.filter((s) => s.nameCorrect === false).length,
+      appFlagDisagreements: flagDisagreements,
       errorDistribution,
     },
 
@@ -320,8 +412,13 @@ export function analyse({
     dangerousDateErrors: {
       thresholdDays: bar.dangerousLaterDays,
       count: dangerous.length,
+      // Date errors whose size is not recoverable from the logs, because the
+      // corrected value was never written to one. Any of these could be a
+      // dangerous overshoot, so the criterion cannot pass while they exist.
+      unmeasuredDateErrors: unmeasured.length,
       oneSidedUpperBound: dangerousUpperBound,
       records: dangerous.map(failureRecord),
+      unmeasuredRecords: unmeasured.map(failureRecord),
     },
 
     incorrectAccepts: falseAccepts.map(failureRecord),
@@ -399,7 +496,7 @@ function falseAcceptCriterion({ n, k, observedRate, upperBound, bar }) {
   };
 }
 
-function dangerousCriterion({ n, dangerous, upperBound, bar }) {
+function dangerousCriterion({ n, dangerous, unmeasured, upperBound, bar }) {
   const id = 'no-dangerous-late-accepts';
   const description = `Zero accepts more than ${bar.dangerousLaterDays} days later than truth`;
   const pct = (v) => `${(v * 100).toFixed(2)}%`;
@@ -427,6 +524,26 @@ function dangerousCriterion({ n, dangerous, upperBound, bar }) {
       reason: 'No scored accepts, so no opportunity for the failure to have shown up.',
       observed: 0,
       upperBound: null,
+    };
+  }
+
+  // The logs record that a date was corrected, never what it was corrected to.
+  // An error of unknown size could be a dangerous overshoot, so the criterion
+  // cannot be evaluated until those scans have a truth date supplied.
+  if (unmeasured > 0) {
+    return {
+      id,
+      description,
+      result: 'INSUFFICIENT_EVIDENCE',
+      reason:
+        `${unmeasured} would-be accept${unmeasured === 1 ? ' had its' : 's had their'} date ` +
+        'corrected, but the corrected value is not in the logs, so the size of the error ' +
+        'cannot be measured. Any of them could be an overshoot beyond ' +
+        `${bar.dangerousLaterDays} days. Supply a truthDate for ${unmeasured === 1 ? 'it' : 'them'} ` +
+        'in the ground-truth file to settle this.',
+      observed: 0,
+      upperBound,
+      unmeasuredDateErrors: unmeasured,
     };
   }
 

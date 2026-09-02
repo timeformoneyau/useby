@@ -147,11 +147,20 @@ than read by hand:
 npm run analyse:scans -- ./logs --ground-truth ./ground-truth.json
 ```
 
-It reports dataset integrity, what a trust gate would have auto-accepted, how
-often that would have been wrong, and — with an exact Clopper-Pearson bound —
-whether the sample is big enough for the answer to mean anything. See
-[docs/scan-analysis.md](docs/scan-analysis.md), which also records the three
-instrumentation gaps that currently make some of its input hand-supplied.
+It reads the `useby.trust` decision/outcome pairs, and reports dataset
+integrity, what the shadow gate would have auto-accepted, how often that would
+have been wrong, and — with an exact Clopper-Pearson bound — whether the sample
+is big enough for the answer to mean anything.
+
+Coverage, the rejection histogram and the false-accept rate all come off the
+export with no manual work. The one thing the logs never record is what a
+corrected date was corrected *to*, so a truth date has to be supplied for the
+scans that were actually wrong; the report names them and prints a stub. See
+[docs/scan-analysis.md](docs/scan-analysis.md).
+
+The shadow trust engine itself is not on `main` — it is on
+`claude/capture-context-loss-spike-2ivfmb`, unmerged — so a session has to be
+collected from a build made there.
 
 The harness is measurement only. It reads exported logs, changes nothing, and a
 result from it does not authorise altering review behaviour.
