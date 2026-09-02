@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Ground truth and gate decisions for fixtures/session.log.",
+    "Ground truth and gate decisions for fixtures/session-logcat.txt.",
     "One record per scanId. The app logs neither the user's corrections nor a",
     "gate decision today, so both are supplied here by hand — see",
     "docs/scan-analysis.md for the contract and the measurement gap it covers.",

@@ -649,7 +649,7 @@ test('the same input twice produces byte-identical output', () => {
   const run = () =>
     JSON.stringify(
       analyse({
-        scans: loadLogs([join(FIXTURES, 'session.log')]).scans,
+        scans: loadLogs([join(FIXTURES, 'session-logcat.txt')]).scans,
         annotations: loadAnnotations(join(FIXTURES, 'ground-truth.json')).records,
         now: NOW,
       }),
@@ -662,7 +662,7 @@ test('the same input twice produces byte-identical output', () => {
 // ---------------------------------------------------------------------------
 
 test('the fixture session analyses to the counts it was built to produce', () => {
-  const logs = loadLogs([join(FIXTURES, 'session.log')]);
+  const logs = loadLogs([join(FIXTURES, 'session-logcat.txt')]);
   const notes = loadAnnotations(join(FIXTURES, 'ground-truth.json'));
   assert.equal(notes.rejected.length, 0, 'the fixture ground truth should itself be valid');
 
@@ -710,7 +710,7 @@ test('the CLI writes both outputs and reports the verdict through its exit code'
 
   const code = main(
     [
-      join(FIXTURES, 'session.log'),
+      join(FIXTURES, 'session-logcat.txt'),
       '--ground-truth', join(FIXTURES, 'ground-truth.json'),
       '--json', jsonPath,
       '--markdown', mdPath,
@@ -735,7 +735,7 @@ test('the CLI writes both outputs and reports the verdict through its exit code'
 
   // --strict turns the verdict into an exit code for later CI use.
   assert.equal(
-    main([join(FIXTURES, 'session.log'), '--ground-truth', join(FIXTURES, 'ground-truth.json'), '--strict', '--quiet'], io),
+    main([join(FIXTURES, 'session-logcat.txt'), '--ground-truth', join(FIXTURES, 'ground-truth.json'), '--strict', '--quiet'], io),
     2,
   );
 });

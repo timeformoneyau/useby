@@ -316,6 +316,8 @@ tools/scan-analysis/analyse.mjs    Pure: scans in, verdict out. No IO, no clock
 tools/scan-analysis/report.mjs     Renders the Markdown. Computes nothing
 tools/scan-analysis/cli.mjs        Arguments and files, and nothing that decides anything
 tools/scan-analysis/fixtures/      A worked session and its ground truth
+                                   (named .txt, not .log — .gitignore excludes *.log,
+                                    which is right for real exports and wrong for a fixture)
 scripts/scan-analysis.test.mjs     33 tests, run by `npm test`
 ```
 
