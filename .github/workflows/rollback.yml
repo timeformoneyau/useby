@@ -1,0 +1,59 @@
+# Undo the latest release on a channel by republishing the one before it.
+# Phones pick it up like any other update; nothing is reinstalled.
+#
+# Run from the Actions tab (Rollback > Run workflow), or ask Claude to. A
+# production rollback needs the same approval as a production release.
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Which channel to roll back
+        type: choice
+        options: [preview, production]
+        default: preview
+
+permissions:
+  contents: read
+
+env:
+  EAS_CLI_VERSION: 25.2.0
+
+jobs:
+  rollback-preview:
+    if: inputs.channel == 'preview'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm install -g eas-cli@${{ env.EAS_CLI_VERSION }}
+      - env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          LATEST="$(eas update:list --branch preview -p android --json --non-interactive --limit 1 | jq -r '.currentPage[0].group')"
+          eas update:rollback "$LATEST" -p android --message "Rolled back by request" --non-interactive
+
+  rollback-production:
+    if: inputs.channel == 'production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm install -g eas-cli@${{ env.EAS_CLI_VERSION }}
+      - env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          LATEST="$(eas update:list --branch production -p android --json --non-interactive --limit 1 | jq -r '.currentPage[0].group')"
+          eas update:rollback "$LATEST" -p android --message "Rolled back by request" --non-interactive

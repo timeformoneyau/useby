@@ -1,0 +1,53 @@
+# MUST-HAVE 3: take an item off the list.
+#
+# Today that is the row's swipe: "Used it" or "Delete". Recording *wasted*
+# is not built yet (it waits for the Item Detail screen); add it here when it
+# lands.
+appId: com.useby.app
+name: Mark an item used, delete another
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+- runFlow:
+    file: common/scan-and-save.yaml
+    env:
+      FIXTURE: milk
+- runFlow:
+    file: common/scan-and-save.yaml
+    env:
+      FIXTURE: yoghurt
+
+# Used it: swipe the row, tap the action, it leaves the list.
+- swipe:
+    from:
+      text: "Milk"
+    direction: LEFT
+- tapOn: "Mark Milk used"
+- extendedWaitUntil:
+    notVisible: "Milk"
+    timeout: 5000
+- assertVisible: "Greek yoghurt"
+
+# Delete asks first. Cancel keeps it.
+- swipe:
+    from:
+      text: "Greek yoghurt"
+    direction: LEFT
+- tapOn: "Delete Greek yoghurt"
+- assertVisible: "Delete item"
+- tapOn:
+    id: "android:id/button2"   # Cancel
+- assertVisible: "Greek yoghurt"
+
+# Confirming removes it.
+- swipe:
+    from:
+      text: "Greek yoghurt"
+    direction: LEFT
+- tapOn: "Delete Greek yoghurt"
+- tapOn:
+    id: "android:id/button1"   # Delete
+- extendedWaitUntil:
+    visible: "Nothing to keep an eye on yet."
+    timeout: 5000

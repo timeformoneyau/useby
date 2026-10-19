@@ -1,0 +1,62 @@
+# MUST-HAVE 1: add an item by scanning a label.
+#
+# The camera and the proxy are stand-ins (see e2e/README.md); everything in
+# between — resize, request, response mapping, the editor, saving — is the
+# real app code.
+appId: com.useby.app
+name: Add an item by scanning
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+
+# A clean read prefills the editor and saves to the list.
+- runFlow:
+    file: common/scan.yaml
+    env:
+      FIXTURE: milk
+- assertVisible: "Here's what we found"
+- assertVisible: "Milk"
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Milk"
+    timeout: 10000
+- assertVisible: "6 days left"
+- assertVisible: "Later"
+
+# The photo defeated the model: the editor opens empty and the person types it in.
+- runFlow:
+    file: common/scan.yaml
+    env:
+      FIXTURE: unreadable
+- assertVisible: "We couldn't read that one"
+- tapOn:
+    id: "item-name-input"
+- inputText: "Butter"
+- hideKeyboard
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Butter"
+    timeout: 10000
+
+# The scanner is down: say so plainly and fall back to typing it in.
+- runFlow:
+    file: common/scan.yaml
+    env:
+      FIXTURE: server-error
+- assertVisible: "The scanner is unavailable right now. Type it in for the moment."
+- tapOn: "Back"
+
+# No photo at all.
+- tapOn: "Add without a photo"
+- assertVisible: "Add an item"
+- tapOn:
+    id: "item-name-input"
+- inputText: "Bread"
+- hideKeyboard
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Bread"
+    timeout: 10000
+- assertVisible: "Milk"
+- assertVisible: "Butter"

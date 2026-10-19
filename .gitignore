@@ -19,3 +19,21 @@ expo-env.d.ts
 
 *.log
 npm-debug.*
+
+# Signing keys and service credentials. EAS holds the Android keystore
+# remotely; none of these should ever exist in the repo. CI enforces this too
+# (scripts/check-committed-files.mjs), so this list and that one move together.
+*.jks
+*.keystore
+*.p8
+*.p12
+*.pem
+*.key
+*.mobileprovision
+credentials.json
+google-services.json
+GoogleService-Info.plist
+service-account*.json
+
+# Maestro run output (screenshots, logs) from local flow runs
+.maestro-output/

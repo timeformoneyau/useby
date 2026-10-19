@@ -42,6 +42,14 @@
         "projectId": "d033923f-4fce-4383-b8eb-e8af8a22c09f"
       }
     },
-    "owner": "mjreardno62"
+    "owner": "mjreardno62",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/d033923f-4fce-4383-b8eb-e8af8a22c09f",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    }
   }
 }

@@ -1,0 +1,12 @@
+# Scan an item the stand-in proxy reads cleanly, save it, and land on the list.
+appId: com.useby.app
+---
+- runFlow:
+    file: scan.yaml
+    env:
+      FIXTURE: ${FIXTURE}
+- assertVisible: "Here's what we found"
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000

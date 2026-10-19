@@ -1,0 +1,9 @@
+# Fresh install state: no saved items. Every flow starts here so flows never
+# depend on each other's leftovers.
+appId: com.useby.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Nothing to keep an eye on yet."
+    timeout: 30000

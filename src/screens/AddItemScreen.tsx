@@ -146,6 +146,7 @@ export default function AddItemScreen() {
             <Text style={styles.fieldLabel}>Item</Text>
             <TextInput
               ref={nameRef}
+              testID="item-name-input"
               style={[
                 styles.input,
                 nameFocused && styles.inputFocused,
@@ -201,7 +202,7 @@ export default function AddItemScreen() {
             </View>
             {dateType === 'unknown' && (
               <Text style={styles.helpHint}>
-                We'll just call it “Date” — no more than the pack told us.
+                {"We'll just call it “Date” — no more than the pack told us."}
               </Text>
             )}
           </View>

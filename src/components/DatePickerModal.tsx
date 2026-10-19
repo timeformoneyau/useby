@@ -18,7 +18,7 @@ import {
   Pressable,
 } from 'react-native';
 import { parseDate, formatStorage } from '../utils/dateUtils';
-import { colours, fonts, hit, radius } from '../theme';
+import { colours, fonts, radius } from '../theme';
 
 interface Props {
   value: string; // YYYY-MM-DD

@@ -18,6 +18,7 @@ import { colours } from './src/theme';
 import MainListScreen from './src/screens/MainListScreen';
 import AddItemScreen from './src/screens/AddItemScreen';
 import CaptureScreen from './src/screens/CaptureScreen';
+import UpdateBanner from './src/components/UpdateBanner';
 
 /**
  * since-fresh gated this navigator behind a Supabase auth stack and
@@ -66,6 +67,8 @@ export default function App() {
           <Stack.Screen name="Capture" component={CaptureScreen} />
         </Stack.Navigator>
       </NavigationContainer>
+      {/* Above the navigator so it shows on whichever screen is open. */}
+      <UpdateBanner />
     </SafeAreaProvider>
   );
 }

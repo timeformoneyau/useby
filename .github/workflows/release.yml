@@ -1,0 +1,90 @@
+# Publishes main to your phone after CI passes on it, then waits for your
+# approval to promote the same update to production.
+#
+#   publish   automatic. An over-the-air update to `preview`, or, when native
+#             code changed, a new EAS build plus a GitHub issue with the link.
+#   promote   waits for approval of the `production` environment (a push
+#             notification in the GitHub mobile app), then republishes the
+#             exact preview update to `production`. Skipped for new builds.
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: # re-publish current main by hand if ever needed
+
+# Releases go out one at a time, in order. Never cancel one mid-publish.
+concurrency:
+  group: release-preview
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  EAS_CLI_VERSION: 25.2.0
+
+jobs:
+  publish:
+    name: publish to preview
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    # EAS free-tier builds can queue for a while; updates take ~3 minutes.
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      kind: ${{ steps.publish.outputs.kind }}
+      group: ${{ steps.publish.outputs.group }}
+      message: ${{ steps.publish.outputs.message }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm install -g eas-cli@${{ env.EAS_CLI_VERSION }}
+
+      - id: publish
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: .github/scripts/publish-preview.sh
+
+  promote:
+    name: promote to production
+    needs: publish
+    if: needs.publish.outputs.kind == 'update'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: production-promotion
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm install -g eas-cli@${{ env.EAS_CLI_VERSION }}
+
+      - env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          GROUP: ${{ needs.publish.outputs.group }}
+          MESSAGE: ${{ needs.publish.outputs.message }}
+        run: .github/scripts/promote-production.sh

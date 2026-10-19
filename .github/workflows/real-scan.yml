@@ -1,0 +1,62 @@
+# One real scan through the deployed proxy and Claude, using the fixture
+# label in e2e/fixtures. Weekly, or by hand from the Actions tab.
+#
+# Cost cap: at most MAX_RUNS_PER_30_DAYS runs. Each run is one proxy call
+# (at most two model calls with the proxy's retry), around a cent or less.
+# Past the cap, a run stops before calling anything.
+name: Real scan check
+
+on:
+  schedule:
+    - cron: '17 21 * * 0' # Mondays 07:17 AEST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # to count recent runs for the cap
+
+concurrency:
+  group: real-scan
+  cancel-in-progress: false
+
+env:
+  MAX_RUNS_PER_30_DAYS: 8
+  EAS_CLI_VERSION: 25.2.0
+
+jobs:
+  real-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Enforce the cost cap
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SINCE="$(date -u -d '30 days ago' +%Y-%m-%d)"
+          COUNT="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/real-scan.yml/runs?created=>=${SINCE}&per_page=100" \
+            --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID})] | length")"
+          echo "Runs in the last 30 days (excluding this one): $COUNT of $MAX_RUNS_PER_30_DAYS"
+          if [ "$COUNT" -ge "$MAX_RUNS_PER_30_DAYS" ]; then
+            echo "::error::Cost cap reached ($MAX_RUNS_PER_30_DAYS runs in 30 days). Nothing was sent."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm install -g eas-cli@${{ env.EAS_CLI_VERSION }}
+
+      - name: Real scan
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          # The proxy secret already lives in EAS's preview environment;
+          # reuse it rather than keeping a second copy in GitHub.
+          eas env:pull --environment preview --path .env.scan --non-interactive > /dev/null
+          set -a; . ./.env.scan; set +a
+          rm -f .env.scan
+          [ -n "${EXPO_PUBLIC_USEBY_PROXY_SECRET:-}" ] && echo "::add-mask::$EXPO_PUBLIC_USEBY_PROXY_SECRET"
+          node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/real-scan-smoke.mjs

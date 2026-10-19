@@ -1,0 +1,5 @@
+# Which files `maestro test e2e/flows` treats as flows. The common/ folder
+# holds steps the flows call, not flows of their own.
+flows:
+  - "*.yaml"
+excludeTags: []
