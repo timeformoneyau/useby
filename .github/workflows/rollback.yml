@@ -23,7 +23,7 @@ env:
 jobs:
   rollback-preview:
     if: inputs.channel == 'preview'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -41,7 +41,7 @@ jobs:
 
   rollback-production:
     if: inputs.channel == 'production'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: production
     steps:

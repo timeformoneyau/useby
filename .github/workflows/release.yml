@@ -30,7 +30,7 @@ jobs:
   publish:
     name: publish to preview
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # EAS free-tier builds can queue for a while; updates take ~3 minutes.
     timeout-minutes: 240
     permissions:
@@ -64,7 +64,7 @@ jobs:
     name: promote to production
     needs: publish
     if: needs.publish.outputs.kind == 'update'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: production
     concurrency:
