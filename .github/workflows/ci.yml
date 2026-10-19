@@ -66,6 +66,7 @@ jobs:
       EXPO_PUBLIC_USEBY_PROXY_URL: https://e2e.invalid
       EXPO_PUBLIC_USEBY_PROXY_SECRET: e2e-placeholder
       MAESTRO_VERSION: 2.11.0
+      MAESTRO_CLI_NO_ANALYTICS: "1"
     steps:
       - uses: actions/checkout@v6
 
@@ -131,7 +132,7 @@ jobs:
       - name: Summarise a failure as annotations
         if: failure()
         run: |
-          for f in gradle.log .maestro-output/maestro.log; do
+          for f in gradle.log .maestro-output/maestro.log .maestro-output/screen.txt .maestro-output/logcat.txt; do
             [ -f "$f" ] || continue
             echo "::error title=Last lines of $f::$(tail -n 60 "$f" | cut -c1-300 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
           done

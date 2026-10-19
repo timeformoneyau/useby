@@ -18,6 +18,21 @@ run() {
     --test-output-dir "$OUT/attempt-$1" 2>&1 | tee -a "$OUT/maestro.log"
 }
 
+# What was on screen and what the app logged, saved while the emulator is
+# still up. CI posts these as annotations when the flows fail.
+diagnose() {
+  adb shell uiautomator dump /sdcard/ui.xml > /dev/null 2>&1 || true
+  adb shell cat /sdcard/ui.xml 2>/dev/null \
+    | grep -o 'text="[^"]*"\|content-desc="[^"]*"\|package="[^"]*"' \
+    | grep -v '=""' | sort -u > "$OUT/screen.txt" || true
+  adb logcat -d -v time 'ReactNativeJS:V' 'ReactNative:V' 'AndroidRuntime:E' 'Expo:V' '*:F' \
+    > "$OUT/logcat.txt" 2>/dev/null || true
+}
+
 if run 1; then exit 0; fi
+diagnose
 echo "::warning::Flow tests failed on the first attempt; retrying once."
-run 2
+adb logcat -c || true
+if run 2; then exit 0; fi
+diagnose
+exit 1
