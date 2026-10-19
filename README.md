@@ -153,10 +153,10 @@ GitHub app to send the same version to production.
 1. **A change is made on a side copy of the code** (a *branch*) and proposed
    as a *pull request*. Nothing reaches your phone at this point.
 2. **GitHub tests it automatically**, in two stages:
-   - *Quick checks* (about 4 minutes): no passwords or keys accidentally
+   - *Quick checks* (about 2 minutes): no passwords or keys accidentally
      included, no code errors, the logic tests pass, and the test-only code
      is definitely not in the real app.
-   - *Flow tests* (about 20 minutes): a simulated Android phone in the cloud
+   - *Flow tests* (about 12–15 minutes): a simulated Android phone in the cloud
      opens the app and adds items by "scanning", checks the list is in the
      right order, and marks items used and deleted.
 3. **If anything fails, it stops there.** Nothing is published. The failure

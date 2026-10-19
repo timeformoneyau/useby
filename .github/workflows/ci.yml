@@ -1,8 +1,8 @@
 # Runs on every push to every branch. A pull request shows these results
 # because they ran on its latest commit.
 #
-#   checks      ~4 min   secrets, typecheck, lint, unit tests, bundle isolation
-#   flow-tests  ~20 min  builds a test app, runs the Maestro flows on an emulator
+#   checks      ~2 min   secrets, typecheck, lint, unit tests, bundle isolation
+#   flow-tests  ~13 min  builds a test app, runs the Maestro flows on an emulator
 #
 # On main, once both pass, release.yml publishes to your phone.
 name: CI
