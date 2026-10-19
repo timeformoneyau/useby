@@ -4,6 +4,13 @@ appId: com.useby.app
 ---
 - launchApp:
     clearState: true
+# A slow CI emulator sometimes raises an "X isn't responding" dialog for a
+# system app. It is not ours; wait it out rather than fail the run on it.
+- runFlow:
+    when:
+      visible: ".*isn't responding.*"
+    commands:
+      - tapOn: "Wait"
 - extendedWaitUntil:
     visible: "Nothing to keep an eye on yet."
     timeout: 30000

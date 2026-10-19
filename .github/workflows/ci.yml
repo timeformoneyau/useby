@@ -119,10 +119,15 @@ jobs:
       - name: Run flows on an Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
+          # ATD: Google's Automated Test Device image. No launcher or
+          # background apps, so no "Pixel Launcher isn't responding" dialog
+          # landing on top of the app, which is what sank the first runs.
+          api-level: 33
           arch: x86_64
-          target: google_apis
+          target: aosp_atd
           profile: pixel_6
+          cores: 4
+          ram-size: 4096M
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash e2e/run-flows.sh android/app/build/outputs/apk/release/app-release.apk
