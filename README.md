@@ -14,7 +14,7 @@ nothing — the image lives only for the length of the request.
 
 ## Requirements
 
-- Node 20+
+- Node 22.6+ (`.nvmrc` pins 22; the test runner needs Node's type stripping)
 - An Expo account (for EAS builds)
 - Android device or emulator
 
@@ -25,7 +25,9 @@ npm install
 npm start          # then press 'a' for Android
 npm run android    # or build and run a dev client directly
 npm run typecheck
-npm test           # offline: scan response mapping. No network, no key needed.
+npm run lint
+npm test           # offline unit tests. No network, no key needed.
+npm run verify     # everything CI's quick checks run, in one go
 ```
 
 ## Scanning: pointing the app at the proxy
@@ -138,26 +140,96 @@ request under `"evt":"parse-expiry"`, carrying the same `scanId` as `id`. Betwee
 the two, a failed scan can be placed at capture, transport, upstream, parsing,
 validation or the model itself.
 
-## Remaining setup: link the EAS project
+## How releases work
 
-This has **not** been run yet — it needs an interactive login to your Expo
-account, which the environment this was scaffolded in did not have:
+*Written for the product owner. No setup knowledge assumed.*
 
-```bash
-npx eas-cli login
-npx eas-cli init
-```
+**The short version:** a change is tested automatically, then turns up on
+your phone by itself. You try it, and if you're happy you tap Approve in the
+GitHub app to send the same version to production.
 
-`eas init` creates the project on your account and writes
-`expo.extra.eas.projectId` into `app.json`. `eas.json` is already committed
-with development / preview / production profiles; the preview profile builds
-an APK for sideloading onto a device.
+**Step by step**
 
-After that:
+1. **A change is made on a side copy of the code** (a *branch*) and proposed
+   as a *pull request*. Nothing reaches your phone at this point.
+2. **GitHub tests it automatically**, in two stages:
+   - *Quick checks* (about 4 minutes): no passwords or keys accidentally
+     included, no code errors, the logic tests pass, and the test-only code
+     is definitely not in the real app.
+   - *Flow tests* (about 20 minutes): a simulated Android phone in the cloud
+     opens the app and adds items by "scanning", checks the list is in the
+     right order, and marks items used and deleted.
+3. **If anything fails, it stops there.** Nothing is published. The failure
+   is fixed and the change is tested again.
+4. **When everything passes, the change merges into `main` and is published
+   to the `preview` channel** (the version your phone runs). One of two
+   things happens:
+   - *Most changes:* an **update** is published. Next time you open UseBy, a
+     banner says **"New version ready — tap to restart"**. Tap it.
+   - *Occasionally* (a new phone feature, a camera setting, a new native
+     package): the change can't travel as an update, so a **new app is
+     built**. A GitHub issue titled *"New UseBy app to install"* appears with
+     a download link. Tap it on your phone and install over the top.
+5. **Promotion to production waits for you.** GitHub sends a push
+   notification ("review deployment"). Approve it in the GitHub mobile app
+   and the *exact same* update goes to the `production` channel, unchanged,
+   not rebuilt. If you approve an old request after a newer release, it is
+   skipped so production never goes backwards. A request left alone expires
+   after 30 days and costs nothing.
 
-```bash
-npx eas-cli build --platform android --profile preview
-```
+**If something goes wrong**
+
+- *A bad update reached your phone:* say "roll back" to Claude, or in GitHub
+  go to Actions → Rollback → Run workflow. The previous version goes out as
+  an update within a few minutes.
+- *How you'd know something is broken:* GitHub emails you (and notifies the
+  GitHub app) when a test run or release fails. A red cross on the pull
+  request means it stopped before your phone. A *"Real scan check"* failure
+  means the live scanner (the proxy or Claude) read the test label wrong or
+  didn't answer.
+
+**What the automated tests do not cover** (these still need your phone)
+
+- The real camera: focus, lighting, glare, a crumpled label.
+- How well Claude reads real packaging. The weekly *Real scan check* sends
+  one clean test label through the live scanner, but real fridges are messier.
+- Feel, speed and layout on your particular phone.
+- Push notifications and anything Supabase, once they exist.
+
+**What it costs**
+
+| | Cost | Where the limit bites |
+|---|---|---|
+| GitHub Actions (all testing) | Free: the repo is public | No minute limit on standard runners |
+| EAS Update (over-the-air updates) | Free plan | Covers ~1,000 monthly users |
+| EAS Build (new app installs) | Free plan, ~15 Android builds a month | Builds queue at busy times (minutes to an hour or more). Only native changes use one |
+| Real scan check | About a cent or less per run | Capped at 8 runs per 30 days |
+| Flow tests | Free | They never call the real scanner |
+
+**Settings that live outside the code**
+
+- The scanner's key is stored on EAS as `EXPO_PUBLIC_USEBY_PROXY_SECRET` for
+  the `preview` and `production` environments, never in this repo. A release
+  refuses to publish if it's missing from preview.
+- A production promotion reuses the preview update unchanged, including the
+  preview scanner settings baked into it. Keep the two EAS environments'
+  scanner values the same.
+- The GitHub token for Expo is the `EXPO_TOKEN` repository secret.
+
+The one-off setup steps are in [`docs/owner-checklist.md`](docs/owner-checklist.md).
+
+### For whoever changes the code
+
+- `runtimeVersion` uses Expo's **fingerprint** policy. `.github/scripts/publish-preview.sh`
+  computes the native fingerprint, looks for an EAS build with that
+  fingerprint, and either publishes an update or starts a build. It fails the
+  release if the published update's runtime version differs from the
+  fingerprint it checked, because that would mean phones silently never get it.
+- Flow tests run against a separate build with test mode compiled in. See
+  [`e2e/README.md`](e2e/README.md).
+- Every change ships with its tests: unit tests in `scripts/*.test.mjs` for
+  logic, a Maestro flow in `e2e/flows/` for anything a person taps through.
+  Run `npm run verify` before pushing.
 
 ## Layout
 
@@ -174,7 +246,11 @@ src/utils/statusUtils.ts      urgency ladder and sorting (five bands)
 src/domain/items/presentation.ts  how an item reads: four visible groups, row copy
 src/components/               ItemCard (the row), DatePickerModal
 src/screens/                  MainListScreen, AddItemScreen, CaptureScreen
-scripts/                      offline tests (no network, no key)
+src/components/UpdateBanner.tsx  "New version ready" prompt (expo-updates)
+src/testing/e2eHook.ts        empty in real builds; test mode attaches here
+scripts/                      offline tests (no network, no key) and CI checks
+e2e/                          flow-test mode, fixtures and Maestro flows
+.github/workflows/            ci, release, rollback, real-scan
 ```
 
 Screens never touch storage directly — all mutations go through
