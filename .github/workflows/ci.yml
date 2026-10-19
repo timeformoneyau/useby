@@ -57,7 +57,7 @@ jobs:
     name: flow-tests
     needs: checks
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       # Build-time switches for the flow-test app only. See metro.config.js
       # and app.config.js. The proxy values point at a stub; no real secret
@@ -65,7 +65,6 @@ jobs:
       USEBY_E2E: '1'
       EXPO_PUBLIC_USEBY_PROXY_URL: https://e2e.invalid
       EXPO_PUBLIC_USEBY_PROXY_SECRET: e2e-placeholder
-      NODE_ENV: production
       MAESTRO_VERSION: 2.11.0
     steps:
       - uses: actions/checkout@v6
@@ -89,7 +88,14 @@ jobs:
 
       - name: Build the flow-test APK (x86_64 only, for the emulator)
         working-directory: android
-        run: ./gradlew assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon
+        timeout-minutes: 45
+        env:
+          NODE_ENV: production
+        run: |
+          set -o pipefail
+          ./gradlew assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --console=plain 2>&1 \
+            | while IFS= read -r line; do printf '%(%H:%M:%S)T %s\n' -1 "$line"; done \
+            | tee ../gradle.log
 
       - name: Install Maestro
         run: |
@@ -112,6 +118,18 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash e2e/run-flows.sh android/app/build/outputs/apk/release/app-release.apk
+
+      # Job logs are not always reachable from where the pipeline is worked on;
+      # annotations are. On failure, surface the tail of whichever log matters.
+      - name: Summarise a failure as annotations
+        if: failure()
+        run: |
+          for f in gradle.log .maestro-output/maestro.log; do
+            [ -f "$f" ] || continue
+            echo "::error title=Last lines of $f::$(tail -n 60 "$f" | cut -c1-300 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
+          done
+          [ -f gradle.log ] && echo "::notice title=Slowest-looking gradle tasks::$(grep '> Task' gradle.log | tail -n 25 | sed ':a;N;$!ba;s/\n/%0A/g')"
+          true
 
       - name: Keep screenshots and logs from the flows
         if: always()

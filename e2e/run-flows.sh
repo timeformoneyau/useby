@@ -4,6 +4,7 @@
 # have nothing to do with the app, and one flake should not block a release.
 # A second failure is treated as real.
 set -euo pipefail
+# pipefail keeps maestro's exit status through the tee to the log.
 
 APK="${1:?usage: run-flows.sh path/to/app.apk}"
 OUT="${MAESTRO_OUT:-.maestro-output}"
@@ -14,7 +15,7 @@ adb install -r "$APK"
 run() {
   maestro test e2e/flows \
     --format junit --output "$OUT/report-$1.xml" \
-    --test-output-dir "$OUT/attempt-$1"
+    --test-output-dir "$OUT/attempt-$1" 2>&1 | tee -a "$OUT/maestro.log"
 }
 
 if run 1; then exit 0; fi
