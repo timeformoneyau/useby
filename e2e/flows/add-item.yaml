@@ -33,7 +33,7 @@ tags:
 - tapOn:
     id: "item-name-input"
 - inputText: "Butter"
-- hideKeyboard
+- pressKey: Enter   # "Done": closes the keyboard; hideKeyboard presses Back on Android
 - tapOn: "Save item"
 - extendedWaitUntil:
     visible: "Butter"
@@ -53,7 +53,7 @@ tags:
 - tapOn:
     id: "item-name-input"
 - inputText: "Bread"
-- hideKeyboard
+- pressKey: Enter   # "Done": closes the keyboard; hideKeyboard presses Back on Android
 - tapOn: "Save item"
 - extendedWaitUntil:
     visible: "Bread"
