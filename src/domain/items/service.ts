@@ -14,6 +14,8 @@ import { UseByItem } from '../../types';
 import { CreateItemInput, DerivedItem } from './types';
 import { loadItems, saveItems } from './storage';
 import { deriveItem } from './derive';
+import { applyItemEdit, editChangesAnything, type ItemEdit } from './edit';
+import { photoStore } from './photoStore';
 import { sortItems } from '../../utils/statusUtils';
 
 function generateId(): string {
@@ -26,6 +28,20 @@ export async function getDerivedItems(): Promise<DerivedItem[]> {
   return sortItems(items).map(deriveItem);
 }
 
+/**
+ * One item by id, or `null` if it is not there any more.
+ *
+ * `null` is an ordinary answer rather than an error: Item Detail is reached by
+ * a navigation that outlives the record, so an item removed from another screen
+ * — or on a second tap after Used — lands here legitimately. The screen shows
+ * nothing and offers a way back rather than treating it as a fault.
+ */
+export async function getDerivedItem(itemId: string): Promise<DerivedItem | null> {
+  const items = await loadItems();
+  const item = items.find((i) => i.id === itemId);
+  return item ? deriveItem(item) : null;
+}
+
 /** Create a new item and persist it. */
 export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
   const now = new Date().toISOString();
@@ -34,6 +50,13 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
     name: input.name,
     expiryDate: input.expiryDate,
     dateType: input.dateType ?? 'unknown',
+    // Already copied into durable storage by the caller before we got here, so
+    // this is a name for a file that exists. Absent for a manual add, and
+    // absent when the copy failed — both simply mean no photo.
+    ...(input.photo ? { photo: input.photo } : {}),
+    // Only when true. An absent field means "nothing was tracking this", which
+    // is a different statement from "the date came from the packaging".
+    ...(input.dateUserSet ? { dateUserSet: true } : {}),
     source: input.source ?? 'manual',
     createdAt: now,
     updatedAt: now,
@@ -43,6 +66,42 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
   await saveItems([...existing, item]);
 
   return deriveItem(item);
+}
+
+/**
+ * Change a saved item's name or Use By date.
+ *
+ * An update in place, never a delete and recreate. The item keeps its `id`, its
+ * `createdAt`, its retained photo and its recorded provenance; only the two
+ * editable fields and `updatedAt` move. What the new record looks like is
+ * decided by `applyItemEdit`, which is pure and tested — this function is the
+ * storage half and nothing more.
+ *
+ * **It does not touch the filesystem.** Metadata editing has nothing to do with
+ * the photo: the filename is carried across unchanged, so there is no path here
+ * that could orphan, duplicate or delete an image.
+ *
+ * Returns the updated item, or `null` if it is not there any more — reachable
+ * when the item was removed from another screen while the editor was open, and
+ * an ordinary answer rather than an error.
+ */
+export async function updateItem(
+  itemId: string,
+  edit: ItemEdit,
+): Promise<DerivedItem | null> {
+  const items = await loadItems();
+  const existing = items.find((i) => i.id === itemId);
+  if (!existing) return null;
+
+  // A Save that changes nothing is not a write. It should not bump `updatedAt`
+  // and it must not mark the date as the user's — opening the editor and
+  // pressing Save is not the same event as changing the date.
+  if (!editChangesAnything(existing, edit)) return deriveItem(existing);
+
+  const updated = applyItemEdit(existing, edit, new Date().toISOString());
+  await saveItems(items.map((i) => (i.id === itemId ? updated : i)));
+
+  return deriveItem(updated);
 }
 
 /**
@@ -56,5 +115,30 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
  */
 export async function removeItem(itemId: string): Promise<void> {
   const items = await loadItems();
+  const going = items.find((i) => i.id === itemId);
+
+  // Storage first, file second, and the order is load-bearing. If the process
+  // dies between the two the result is a file nothing refers to, which the
+  // start-up sweep collects and nobody ever sees. Reversed, it would leave an
+  // item pointing at a file that is gone — a visible broken image, and the one
+  // failure the user would actually notice.
   await saveItems(items.filter((i) => i.id !== itemId));
+  photoStore.remove(going?.photo);
+}
+
+/**
+ * Delete every stored photo no item refers to.
+ *
+ * The backstop that turns "photos are usually cleaned up" into a guarantee. It
+ * covers a crash between the two writes in `removeItem`, a delete that failed,
+ * a save that stored a file and then could not write the item, and any path
+ * nobody has thought of yet.
+ *
+ * **Start-up only, never on a timer.** A sweep running while a save is in
+ * flight could delete the file for an item whose record has not landed yet.
+ * At start-up there is nothing in flight to race.
+ */
+export async function sweepOrphanPhotos(): Promise<number> {
+  const items = await loadItems();
+  return photoStore.sweep(items.map((i) => i.photo));
 }

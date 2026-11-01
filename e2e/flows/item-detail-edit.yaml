@@ -1,0 +1,71 @@
+# Item Detail, saved-photo retention, and editing a saved item.
+#
+# The saved item keeps the photograph it was scanned from: Item Detail only
+# shows the photo block when the stored file resolves and loads, so seeing it
+# is the check. Editing changes the name in place — same item, same photo —
+# and both the edit and the photo survive the app being stopped and started.
+appId: com.useby.app
+name: Item Detail, photo retention and editing
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+- runFlow:
+    file: common/scan-and-save.yaml
+    env:
+      FIXTURE: milk
+      NAME: Milk
+
+# Item Detail, with the photo it was scanned from.
+- tapOn: "Milk"
+- extendedWaitUntil:
+    visible: "Edit Milk"
+    timeout: 10000
+- assertVisible: "6 days left"
+- assertVisible: "Photo of Milk"
+
+# Edit the name.
+- tapOn: "Edit Milk"
+- assertVisible: "Edit item"
+- tapOn:
+    id: "edit-item-name-input"
+- eraseText: 20
+- inputText: "Oat milk"
+- pressKey: Enter   # "Done": closes the keyboard; hideKeyboard presses Back on Android
+- tapOn: "Save changes"
+
+# Back on the same item: new name, same date, same photo.
+- extendedWaitUntil:
+    visible: "Edit Oat milk"
+    timeout: 10000
+- assertVisible: "6 days left"
+- assertVisible: "Photo of Oat milk"
+- tapOn: "Back"
+- extendedWaitUntil:
+    visible: "Oat milk"
+    timeout: 10000
+- assertNotVisible: "Milk"
+
+# Stop and start the app. Nothing is cleared this time.
+- stopApp
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: ".*isn't responding.*"
+    commands:
+      - tapOn: "Wait"
+- extendedWaitUntil:
+    visible: "Oat milk"
+    timeout: 30000
+- tapOn: "Oat milk"
+- extendedWaitUntil:
+    visible: "Edit Oat milk"
+    timeout: 10000
+- assertVisible: "Photo of Oat milk"
+
+# Used it, from Item Detail, takes it off the list.
+- tapOn: "Mark Oat milk used"
+- extendedWaitUntil:
+    visible: "Nothing to keep an eye on yet."
+    timeout: 10000

@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Corrected dates for fixtures/session-logcat.txt.",
+    "",
+    "Only needed for scans whose date the user corrected. The logs already say",
+    "*that* a date was wrong (dateChanged on the outcome line); what they never",
+    "record is what it was corrected to, so the size and direction of the error",
+    "have to be supplied here. Everything else — coverage, the rejection",
+    "histogram, the false-accept rate — comes straight off the export.",
+    "",
+    "p-mfk3a006-0006f is deliberately left out, to exercise the case where a",
+    "date error's magnitude is unknown and the dangerous-overshoot criterion",
+    "therefore cannot be settled.",
+    "",
+    "There is no item-name field, on purpose: the app records name length and a",
+    "changed/unchanged boolean, never the text."
+  ],
+  "scans": [
+    { "scanId": "p-mfk3a004-0004d", "truthDate": "2026-09-10" },
+    { "scanId": "p-mfk3a003-0003c", "truthDate": "2026-04-09" },
+    { "scanId": "p-mfk3a013-0013m", "truthDate": "2026-09-04" }
+  ]
+}

@@ -1,0 +1,9 @@
+# From Home: pick the fixture the next shot gets, open the camera, and wait
+# until the stand-in camera is showing it. Ends on the camera.
+appId: com.useby.app
+---
+- openLink: "useby://e2e?fixture=${FIXTURE}"
+- tapOn: "Scan item"
+- extendedWaitUntil:
+    visible: "Test camera · ${FIXTURE}"
+    timeout: 10000

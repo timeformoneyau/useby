@@ -1,0 +1,85 @@
+# MUST-HAVE 2: the list puts whatever needs using soonest at the top.
+#
+# Also the consecutive-capture path: four shots in one visit to the camera,
+# without waiting for any answer. Each draft must come back with its own
+# answer, wait on Home as its own row, and need its own review before it is
+# saved. Items are captured out of urgency order; the list must come back
+# most-urgent-first, under the right group headings.
+appId: com.useby.app
+name: Consecutive capture, then dashboard sorted by expiry
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+- runFlow:
+    file: common/open-camera.yaml
+    env:
+      FIXTURE: milk          # 6 days left
+- tapOn: "Capture"
+- runFlow:
+    file: common/shoot.yaml
+    env:
+      FIXTURE: cheese        # 3 days past
+- runFlow:
+    file: common/shoot.yaml
+    env:
+      FIXTURE: yoghurt       # 2 days left
+- runFlow:
+    file: common/shoot.yaml
+    env:
+      FIXTURE: chicken       # today
+
+# All four were kept, and nothing was saved without review.
+- extendedWaitUntil:
+    visible: "4 to review"
+    timeout: 20000
+- runFlow: common/close-camera.yaml
+- assertVisible: "JUST SCANNED"
+- assertVisible: "Nothing to keep an eye on yet."
+
+# Each draft carries its own answer. Review and save each from Home.
+- tapOn: "Chicken thighs"
+- assertVisible: "Here's what we found"
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- tapOn: "Milk"
+- assertVisible: "Here's what we found"
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- tapOn: "Cheddar"
+- assertVisible: "Here's what we found"
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- tapOn: "Greek yoghurt"
+- assertVisible: "Here's what we found"
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- assertNotVisible: "JUST SCANNED"
+
+- assertVisible: "Past their date"
+- assertVisible: "Use soon"
+- assertVisible: "Later"
+- assertVisible: "Past by 3 days"
+- assertVisible: "2 days left"
+- assertVisible: "6 days left"
+
+- assertVisible:
+    text: "Chicken thighs"
+    below:
+      text: "Cheddar"
+- assertVisible:
+    text: "Greek yoghurt"
+    below:
+      text: "Chicken thighs"
+- assertVisible:
+    text: "Milk"
+    below:
+      text: "Greek yoghurt"

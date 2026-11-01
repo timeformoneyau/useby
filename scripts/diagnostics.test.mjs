@@ -176,6 +176,34 @@ test('a failure still reports serverMs without a model time', () => {
   assert.ok(!('modelMs' in out));
 });
 
+test('queue time is reported, and kept separate from time on the wire', () => {
+  // Since captures became non-blocking a scan can sit waiting for a slot. That
+  // is not latency — nothing was happening — and folding it into requestMs
+  // would make a tight concurrency cap look exactly like a slow network and
+  // send the next person optimising the wrong stage.
+  const out = timingBreakdown({
+    totalMs: 6100,
+    captureMs: 300,
+    resizeMs: 220,
+    queuedMs: 1800,
+    requestMs: 3700,
+    serverMs: 1850,
+    modelMs: 1630,
+  });
+  assert.equal(out.queuedMs, 1800);
+  assert.equal(out.requestMs, 3700, 'the wire time is untouched by queueing');
+  assert.equal(out.overheadMs, 1850, 'still requestMs - serverMs, not affected');
+});
+
+test('a scan that never queued reports no queue time at all', () => {
+  // A free slot at the shutter means no wait happened. Logging 0 would be a
+  // measured zero — a different claim from "this did not queue".
+  const out = timingBreakdown({
+    totalMs: 2400, captureMs: 300, resizeMs: 200, requestMs: 1900, serverMs: 1850,
+  });
+  assert.ok(!('queuedMs' in out), 'absent, not zero');
+});
+
 test('timing headers are parsed defensively', () => {
   assert.equal(readTimingHeader('3550'), 3550);
   assert.equal(readTimingHeader('3550.6'), 3551, 'rounded, not left fractional');

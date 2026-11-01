@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,14 +9,40 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
-import { scanPhoto } from '../domain/scan/client';
-import { emptyPrefill } from '../domain/scan/mapping';
-import { newScanId, scanTrace } from '../domain/scan/diagnostics';
-import ReadingIndicator from '../components/ReadingIndicator';
+import { emptyPrefill, failureMessage } from '../domain/scan/mapping';
+import { newScanId, scanTrace, trustTrace } from '../domain/scan/diagnostics';
+import { scanQueue } from '../domain/scan/queue';
+import { latestSettled, type PendingScan } from '../domain/scan/pending';
+import { usePendingCounts, usePendingScans } from '../domain/scan/usePendingScans';
+import { warmProxy } from '../config/proxy';
+import CameraResultCard from '../components/CameraResultCard';
 import { colours, fonts, hit, radius } from '../theme';
+
+type CaptureRoute = RouteProp<RootStackParamList, 'Capture'>;
+
+/**
+ * Longest edge we send.
+ *
+ * The model's vision tier downsamples above 1568px, so more pixels cost upload
+ * time and buy nothing. What matters is that this constrains the *long* edge:
+ * the previous `width: 1200` was a third rule that quietly threw away a quarter
+ * of the resolution on any landscape shot, and the date stamp is the smallest
+ * thing in the frame.
+ */
+const MAX_EDGE_PX = 1568;
+
+/**
+ * JPEG quality for the one re-encode we cannot avoid.
+ *
+ * Raised from 0.7 alongside the resolution, and for the same reason: the
+ * characters that matter are small, low-contrast and often embossed, and they
+ * are exactly what compression eats first. The upload is larger, which no
+ * longer costs anyone anything now that nothing waits on it.
+ */
+const JPEG_QUALITY = 0.8;
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
 
@@ -28,10 +54,31 @@ type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
  * proxy, which calls the Anthropic API and returns the item name, date and date
  * type with a per-field confidence.
  *
- * The screen never blocks on that call succeeding. Whatever comes back — a
- * clean read, a partial one, or nothing at all — the user lands in the same
- * Review & Save editor, prefilled as far as the read allowed. A failed scan is
- * a prefill with a note on it, not a dead end.
+ * **This screen no longer waits for that call.** It used to: shutter, resize,
+ * await the proxy behind a full-screen "Reading the label…", then hand the
+ * result on as a navigation parameter. Production timing settled why that had
+ * to go — ~1.85s of server time per scan, ~88% of it the model — and no
+ * plausible tuning of the rest changes how it feels to photograph eight items
+ * one after another. So the shutter now hands the photo to `scanQueue` and
+ * returns to ready immediately.
+ *
+ * **Results come back to this screen.** They used to land only on Home, and the
+ * real-device test found the cost of that: by the time anyone looked, the
+ * shopping was put away and three rows saying `Beef mince` matched no
+ * particular pack any more. So each scan, as it settles, surfaces here as one
+ * card carrying the photograph that produced it — in front of someone still
+ * holding the thing it describes. It floats over the preview, it never blocks
+ * the shutter, and ignoring it entirely is a supported way to use this screen.
+ * Every draft is still on Home either way; nothing here saves anything.
+ *
+ * The screen therefore owns no request. That is the point: it can be unmounted,
+ * navigated away from, or left entirely while scans are still in flight, and
+ * nothing is cancelled and nothing is lost.
+ *
+ * What it does *not* do is navigate away when a scan finishes. Whoever is
+ * holding the phone is halfway through a bag of shopping; the app deciding they
+ * are finished, because a network call happened to return, would be exactly the
+ * interruption this work exists to remove.
  *
  * Kept sparse deliberately: no scanner theatre, no bounding boxes, no
  * confidence readouts. The artboard also shows a "Flash auto" control, which is
@@ -40,17 +87,115 @@ type Nav = NativeStackNavigationProp<RootStackParamList, 'Capture'>;
  */
 export default function CaptureScreen() {
   const navigation = useNavigation<Nav>();
+  const route = useRoute<CaptureRoute>();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
 
   /**
-   * 'capturing' covers the shutter and the resize; 'reading' covers the wait on
-   * the proxy. They are separate because the second one is the slow half and
-   * deserves to say what it is doing.
+   * Only the local half of a capture blocks the shutter now — the photo and the
+   * resize, which are fast and genuinely cannot overlap on one camera. The wait
+   * on the proxy used to be a third phase here and is gone entirely.
    */
-  const [phase, setPhase] = useState<'idle' | 'capturing' | 'reading'>('idle');
+  const [phase, setPhase] = useState<'idle' | 'capturing'>('idle');
   const [error, setError] = useState<string | null>(null);
   const busy = phase !== 'idle';
+
+  const { counts, line } = usePendingCounts();
+  const anyPending = counts.checking + counts.toReview > 0;
+
+  const scans = usePendingScans();
+
+  /**
+   * Results the user has waved off this visit to the camera.
+   *
+   * View state, not queue state — the draft is untouched and still on Home, so
+   * dismissing costs nothing and needs no confirmation. Kept here rather than
+   * in the queue because it is about what this screen is showing, not about
+   * what the scan is.
+   */
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+
+  /**
+   * When this visit to the camera began.
+   *
+   * The card shows results that arrive while someone is standing here, not the
+   * backlog. Without this, opening the camera to photograph the next thing
+   * would greet you with the answer to something from five minutes ago — stale,
+   * and an interruption rather than news. Anything older is still on Home.
+   *
+   * A lazy state initialiser rather than `useRef(Date.now())`: same value, read
+   * once on mount, but not an impure call during render (react-hooks/purity).
+   */
+  const [openedAt] = useState(() => Date.now());
+  // The draft a retake is about to replace is the photo being thrown away;
+  // showing it under "Replacing this scan" would invite tapping the wrong thing.
+  const replacingNow = route.params?.replacing;
+  const showing = useMemo(
+    () =>
+      latestSettled(
+        scans,
+        replacingNow ? new Set([...dismissed, replacingNow]) : dismissed,
+        openedAt,
+      ),
+    [scans, dismissed, openedAt, replacingNow],
+  );
+
+  /**
+   * The draft this visit is retaking, if any. Consumed by the first shutter.
+   *
+   * A ref rather than state: it must be readable at the moment of the tap and
+   * cleared in the same breath, and it must not survive into the next shot. A
+   * retake replaces exactly one draft; whatever is photographed afterwards is a
+   * new item like any other.
+   */
+  const replacingRef = useRef<string | undefined>(route.params?.replacing);
+
+  /**
+   * The same fact as `replacingRef`, in a form the render can see.
+   *
+   * Two of them because they answer at different moments: the ref has to be
+   * readable and clearable within the tick of the tap, and a re-render is far
+   * too late for that, while the header label only exists to be drawn. The same
+   * split the save guard in the editor already makes, for the same reason.
+   *
+   * Read straight from the route: the param is cleared the moment the retake is
+   * spent (see `handleCapture`), so it is true exactly while one is owed.
+   */
+  const replacingParam = route.params?.replacing;
+  const retaking = Boolean(replacingParam);
+
+  /**
+   * A retake can also arrive at a camera that is already open.
+   *
+   * Review & Save opened from this screen's result card sends Retake back here
+   * (`popTo`) rather than stacking a second camera, so the request arrives as a
+   * change of params on a mounted screen rather than as a fresh mount. The ref
+   * follows the param so the next shutter press sees it.
+   */
+  useEffect(() => {
+    if (replacingParam) replacingRef.current = replacingParam;
+  }, [replacingParam]);
+
+  // Spend the cold start while the camera is opening rather than on whatever
+  // gets photographed first. Costs nothing and is allowed to fail — see
+  // `warmProxy`.
+  useEffect(() => {
+    warmProxy();
+  }, []);
+
+  function handleOpenResult(scan: PendingScan) {
+    // The fallback covers the one case the queue cannot produce a draft for — a
+    // runner that threw outright — so even that opens a usable editor rather
+    // than a blank one. Same prefill Home uses for the same case.
+    navigation.navigate('Add', {
+      prefill: scan.prefill ?? emptyPrefill('photo', failureMessage('server')),
+      scanId: scan.scanId,
+    });
+  }
+
+  function handleDismissResult(scan: PendingScan) {
+    setDismissed((current) => new Set(current).add(scan.scanId));
+  }
 
   async function handleCapture() {
     if (busy || !cameraRef.current) return;
@@ -69,6 +214,7 @@ export default function CaptureScreen() {
     const shutterAt = Date.now();
 
     let imageBase64: string;
+    let imageUri: string;
     let captureMs = 0;
     let resizeMs = 0;
     let stage: 'camera' | 'resize' | 'encode' = 'camera';
@@ -80,19 +226,41 @@ export default function CaptureScreen() {
 
       const resizeStartedAt = Date.now();
 
-      // Resize/compress client-side. Kept from since-fresh, and now
-      // load-bearing: the proxy rejects anything it cannot fit inside Vercel's
-      // request-body limit, and a smaller upload is a faster scan on a phone in
-      // a kitchen.
-      const manipulated = await ImageManipulator.manipulateAsync(
-        photo.uri,
-        [{ resize: { width: 1200 } }],
-        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true },
-      );
+      // Constrain the long edge, whichever one it is. Asking for a width alone
+      // is right for a portrait shot and wrong for a landscape one, where it
+      // silently produced a 1200px long edge against the 1568 the model tier
+      // accepts — a quarter of the linear resolution, thrown away on the
+      // smallest text in the frame.
+      //
+      // Skipped entirely when the photo is already inside the box: there is no
+      // `withoutEnlargement` here, so asking to resize a smaller image up would
+      // invent pixels and cost upload for the privilege.
+      const longEdge = Math.max(photo.width, photo.height);
+      const resize =
+        longEdge > MAX_EDGE_PX
+          ? [
+              photo.width >= photo.height
+                ? { resize: { width: MAX_EDGE_PX } }
+                : { resize: { height: MAX_EDGE_PX } },
+            ]
+          : [];
+
+      // The re-encode happens either way — base64 is what goes on the wire, and
+      // it is produced here. That makes this the *only* lossy step we control,
+      // which is why the quality went up rather than down.
+      const manipulated = await ImageManipulator.manipulateAsync(photo.uri, resize, {
+        compress: JPEG_QUALITY,
+        format: ImageManipulator.SaveFormat.JPEG,
+        base64: true,
+      });
 
       stage = 'encode';
       if (!manipulated.base64) throw new Error('Could not process the photo.');
       imageBase64 = manipulated.base64;
+      // Kept, not discarded. This file is the draft's identity from here on —
+      // the thumbnail that answers "which pack was this?" — and the queue holds
+      // it until the draft is saved, discarded or retaken.
+      imageUri = manipulated.uri;
       resizeMs = Date.now() - resizeStartedAt;
 
       // What the model is actually being given. Both pairs of dimensions are
@@ -108,6 +276,11 @@ export default function CaptureScreen() {
         shot: { w: photo.width, h: photo.height },
         sent: { w: manipulated.width, h: manipulated.height },
         kb: Math.round(imageBase64.length / 1024),
+        // Present only on a retake, and it names the draft this photo is
+        // superseding. Without it a retake and an ordinary capture are
+        // indistinguishable in the log, and "why is there only one row when I
+        // took two photos?" has no answer.
+        ...(replacingRef.current ? { replaces: replacingRef.current } : {}),
       });
     } catch (e) {
       // Pre-request, so there is no secret anywhere near this: the message is
@@ -126,16 +299,47 @@ export default function CaptureScreen() {
       return;
     }
 
-    setPhase('reading');
-    const result = await scanPhoto(imageBase64, scanId, {
-      shutterAt,
-      captureMs,
-      resizeMs,
-    });
+    // Hand it over and let go. Nothing below this line awaits the model, and
+    // nothing about this scan is owned by this component any more.
+    const job = {
+      scanId,
+      imageBase64,
+      imageUri,
+      capture: { shutterAt, captureMs, resizeMs },
+    };
 
-    navigation.replace('Add', {
-      prefill: result.ok ? result.prefill : emptyPrefill('photo', result.message),
-    });
+    // Consumed here, so a retake replaces exactly one draft and every shot
+    // after it is an ordinary new item.
+    const replacing = replacingRef.current;
+    replacingRef.current = undefined;
+    if (replacing) {
+      // Spent. Cleared from the params too, so the "Replacing this scan" label
+      // goes and a later retake is always seen as a change.
+      navigation.setParams({ replacing: undefined });
+
+      // A retake is the third outcome a scan can have, and it means the result
+      // was not good enough to work with — which is exactly as informative as a
+      // corrected date. Recorded before the draft goes, while its verdict is
+      // still there to read.
+      const superseded = scanQueue.get(replacing);
+      trustTrace(replacing, 'outcome', {
+        action: 'retaken',
+        verdict: superseded?.trust?.verdict ?? 'none',
+        blocking: superseded?.trust?.blocking ?? [],
+        replacedBy: scanId,
+      });
+
+      scanQueue.replace(replacing, job);
+      // The result the user was looking at is gone, and the card must not go on
+      // showing it. Clearing the dismissal set too — a retake is a fresh look at
+      // this screen and anything waved off earlier can reappear if it is still
+      // the most recent thing to come back.
+      setDismissed(new Set());
+    } else {
+      scanQueue.add(job);
+    }
+
+    setPhase('idle');
   }
 
   if (!permission) {
@@ -168,26 +372,29 @@ export default function CaptureScreen() {
     );
   }
 
-  // The wait on the model gets the whole screen: there is nothing to frame any
-  // more, and a live preview underneath would invite another shot mid-request.
-  if (phase === 'reading') {
-    return (
-      <SafeAreaView style={styles.reading}>
-        <ReadingIndicator />
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView style={styles.shell}>
       <View style={styles.topRow}>
+        {/*
+          "Done" once anything is outstanding, because by then leaving is not
+          abandoning a capture — it is finishing unpacking and going to look at
+          what came back. "Cancel" would misdescribe it.
+        */}
         <TouchableOpacity
           onPress={() => navigation.goBack()}
           disabled={busy}
           style={styles.cancelBtn}
+          accessibilityRole="button"
         >
-          <Text style={styles.cancelText}>Cancel</Text>
+          <Text style={styles.cancelText}>{anyPending ? 'Done' : 'Cancel'}</Text>
         </TouchableOpacity>
+
+        {/*
+          Only while a retake is still owed a photo. Someone who arrived here
+          from a draft needs to know the next shot replaces it rather than
+          adding one — and that the state is gone once they have taken it.
+        */}
+        {retaking && <Text style={styles.retakeNote}>Replacing this scan</Text>}
       </View>
 
       <View style={styles.preview}>
@@ -197,6 +404,22 @@ export default function CaptureScreen() {
         <View style={[styles.bracket, styles.bracketTR]} />
         <View style={[styles.bracket, styles.bracketBL]} />
         <View style={[styles.bracket, styles.bracketBR]} />
+
+        {/*
+          Inside the preview and floating, not in the column below it. Two
+          reasons, both about not disturbing the thing someone is doing: the
+          controls keep their position when a result arrives mid-session, and
+          the card is over the picture rather than pushing the shutter down the
+          screen. It covers the bottom of the frame, which is the part of the
+          preview nobody is aiming with.
+        */}
+        {showing && (
+          <CameraResultCard
+            scan={showing}
+            onOpen={handleOpenResult}
+            onDismiss={handleDismissResult}
+          />
+        )}
       </View>
 
       {/*
@@ -210,6 +433,23 @@ export default function CaptureScreen() {
       <Text style={styles.hint}>
         Keep the item name and printed date visible if you can
       </Text>
+
+      {/*
+        Directly under the guidance and above the shutter, because this is the
+        acknowledgement that a photo was taken: press the button and the number
+        under your thumb goes up. In the corner it was true but easy to miss,
+        and "did that work?" is the question a camera that no longer pauses has
+        to answer without being asked.
+
+        Counts and nothing else. No percentage, no stage sequence, no estimate —
+        the model's timing is unknowable from here, and inventing a number to
+        fill the silence is exactly what the design forbids.
+      */}
+      {line && (
+        <Text style={styles.pendingLine} accessibilityLiveRegion="polite">
+          {line}
+        </Text>
+      )}
 
       {error && (
         <View style={styles.errorBanner}>
@@ -290,12 +530,36 @@ const styles = StyleSheet.create({
     color: colours.secondaryAction,
   },
 
-  topRow: { paddingHorizontal: 14, paddingVertical: 8 },
-  cancelBtn: { paddingVertical: 12, paddingHorizontal: 10, alignSelf: 'flex-start' },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  /* No `alignSelf` any more: the row lays this out now that it can hold a
+     second item, and pinning it to the top would leave it sitting above the
+     retake note beside it. */
+  cancelBtn: { paddingVertical: 12, paddingHorizontal: 10 },
+  retakeNote: {
+    fontSize: 13.5,
+    fontFamily: fonts.regular,
+    color: colours.cameraDim,
+  },
   cancelText: {
     fontSize: 15,
     fontFamily: fonts.regular,
     color: colours.cameraText,
+  },
+  /* Dimmer than the guidance above it: informative, never the thing competing
+     with the shutter for attention. */
+  pendingLine: {
+    paddingHorizontal: 30,
+    paddingTop: 2,
+    textAlign: 'center',
+    fontSize: 13.5,
+    fontFamily: fonts.regular,
+    color: colours.cameraDim,
   },
 
   preview: {
@@ -392,12 +656,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   shutterDisabled: { opacity: 0.6 },
-
-  reading: {
-    flex: 1,
-    backgroundColor: colours.cameraBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 16,
-  },
 });

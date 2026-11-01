@@ -20,6 +20,7 @@ import {
   readTimingHeader,
   scanTrace,
   timingBreakdown,
+  trustTrace,
 } from './diagnostics';
 import {
   describeRead,
@@ -27,9 +28,11 @@ import {
   readFields,
   reasonForStatus,
   scanFailure,
+  toEvidence,
   toPrefill,
   type ScanResult,
 } from './mapping';
+import { evaluateRecognitionTrust } from './trust';
 
 /**
  * The vision call is not fast: the proxy resizes the image with sharp and then
@@ -91,9 +94,11 @@ export async function scanPhoto(
    * One line per scan, always carrying the timing breakdown.
    *
    * `totalMs` is measured from the shutter rather than from this function, so
-   * it is the wait the person actually experienced. Everything else divides
-   * that up. A failure gets the same treatment as a success — a scan that took
-   * eight seconds and then failed is exactly the case worth accounting for.
+   * it is the whole elapsed life of the scan. Everything else divides that up —
+   * including `queuedMs`, which since captures became non-blocking can be a
+   * real share of it and must stay separable from time on the wire. A failure
+   * gets the same treatment as a success: a scan that took eight seconds and
+   * then failed is exactly the case worth accounting for.
    */
   const trace = (entry: Record<string, unknown>) => {
     const requestMs = Date.now() - startedAt;
@@ -102,6 +107,7 @@ export async function scanPhoto(
         totalMs: Date.now() - stopwatch.shutterAt,
         captureMs: stopwatch.captureMs,
         resizeMs: stopwatch.resizeMs,
+        queuedMs: stopwatch.queuedMs,
         requestMs,
         ...serverTimings,
       }),
@@ -186,6 +192,36 @@ export async function scanPhoto(
 
   const prefill = toPrefill(fields);
 
+  // Shadow mode. Evaluated here because this is where a scan's result is fully
+  // known, and then written to its own log line and carried no further than the
+  // pending record. `toPrefill` above does not see it and cannot: the editor
+  // opens exactly as it did before this existed, for every scan, every time.
+  //
+  // The clock is read once, here, so the plausibility window and the
+  // year-inference rule cannot disagree with each other mid-evaluation.
+  const trust = evaluateRecognitionTrust(toEvidence(fields), new Date());
+
+  trustTrace(scanId, 'decision', {
+    verdict: trust.verdict,
+    blocking: trust.blocking,
+    advisory: trust.advisory,
+    // The printed characters and what the rules made of them. This is the pair
+    // that explains a rejection: `sawText` without `derivedIso` is a string we
+    // could not read, and a `derivedIso` differing from `modelIso` is the two
+    // routes disagreeing about the same characters.
+    sawText: fields.observed?.dateText ?? null,
+    sawLabel: fields.observed?.dateLabelText ?? null,
+    others: fields.observed?.otherDateTexts.length ?? 0,
+    derivedIso: trust.derived.iso,
+    derivedType: trust.derived.dateType,
+    format: trust.derived.format,
+    modelIso: fields.expiryDate.value,
+    modelType: fields.dateType.value,
+    // Presence and length only — never the name itself. Same rule as the scan
+    // trace: that is the contents of someone's fridge.
+    nameLen: fields.itemName.value?.length ?? 0,
+  });
+
   // A 200 is not the same as a useful read: the model can return nulls for
   // everything and still succeed. `read` separates "the pipeline works and the
   // photo was hard" from "the pipeline is broken", and `dropped` catches the
@@ -201,5 +237,5 @@ export async function scanPhoto(
     idEchoed: echo === scanId,
   });
 
-  return { ok: true, prefill };
+  return { ok: true, prefill, trust };
 }

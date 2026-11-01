@@ -18,7 +18,7 @@ import {
   Pressable,
 } from 'react-native';
 import { parseDate, formatStorage } from '../utils/dateUtils';
-import { colours, fonts, hit, radius } from '../theme';
+import { colours, fonts, radius } from '../theme';
 
 interface Props {
   value: string; // YYYY-MM-DD
@@ -113,7 +113,7 @@ export default function DatePickerModal({ value, onConfirm, onCancel }: Props) {
           <TouchableOpacity onPress={onCancel}>
             <Text style={styles.toolbarCancel}>Cancel</Text>
           </TouchableOpacity>
-          <Text style={styles.toolbarTitle}>Date on the pack</Text>
+          <Text style={styles.toolbarTitle}>Use By date</Text>
           <TouchableOpacity onPress={handleConfirm}>
             <Text style={styles.toolbarDone}>Done</Text>
           </TouchableOpacity>

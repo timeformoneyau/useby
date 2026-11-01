@@ -13,8 +13,20 @@ const STORAGE_KEY = '@useby_v1_items';
  * `undefined`, which the UI presents as an unknown date type — accurate, since
  * those items were saved before we recorded what the pack said. The version is
  * bumped to record that the shape moved, not because anything rewrites it.
+ *
+ * Version 3 added the optional `photo`, on exactly the same terms: an older
+ * record lacks it, reads back as `undefined`, and renders with no photo block —
+ * which is true, because nothing was retained for it. Nothing rewrites existing
+ * records and `isItem` does not inspect the field, so a v1 or v2 record is
+ * still a valid item and keeps working untouched.
+ *
+ * Version 4 added the optional `dateUserSet`, on the same terms again. Its
+ * absence on an older record is not a claim that the date came from the
+ * packaging — it means nothing was tracking the question when that item was
+ * saved, which is the honest reading and the one anything acting on date
+ * semantics should take.
  */
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 4;
 
 interface Envelope {
   version: number;
