@@ -336,6 +336,7 @@ export default function AddItemScreen() {
             <Text style={styles.fieldLabel}>Item</Text>
             <TextInput
               ref={nameRef}
+              testID="item-name-input"
               style={[
                 styles.input,
                 nameFocused && styles.inputFocused,

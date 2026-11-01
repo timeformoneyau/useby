@@ -1,0 +1,154 @@
+# Runs on every push to every branch. A pull request shows these results
+# because they ran on its latest commit.
+#
+#   checks      ~2 min   secrets, typecheck, lint, unit tests, bundle isolation
+#   flow-tests  ~13 min  builds a test app, runs the Maestro flows on an emulator
+#
+# On main, once both pass, release.yml publishes to your phone.
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+# A newer push to the same branch makes an older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # whole history, so the secret scan covers every commit
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Secret scan (gitleaks, whole history)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar xz gitleaks
+          ./gitleaks git --redact --no-banner --log-opts="--all" .
+
+      - name: No env files or keys committed
+        run: npm run check:secrets
+
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+      - name: Test mode is absent from the production bundle
+        run: node scripts/check-bundle-isolation.mjs
+
+  flow-tests:
+    name: flow-tests
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # Build-time switches for the flow-test app only. See metro.config.js
+      # and app.config.js. The proxy values point at a stub; no real secret
+      # is needed or used.
+      USEBY_E2E: '1'
+      EXPO_PUBLIC_USEBY_PROXY_URL: https://e2e.invalid
+      EXPO_PUBLIC_USEBY_PROXY_SECRET: e2e-placeholder
+      MAESTRO_VERSION: 2.11.0
+      MAESTRO_CLI_NO_ANALYTICS: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: npm ci
+
+      - name: Generate the Android project
+        run: npx expo prebuild --platform android --no-install --clean
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Build the flow-test APK (x86_64 only, for the emulator)
+        working-directory: android
+        timeout-minutes: 30
+        env:
+          NODE_ENV: production
+        # Memory: the generated project allows Gradle ~2 GB, and the first run
+        # died of Metaspace exhaustion in KSP then hung. The runner has 16 GB.
+        # Lint: release "lint vital" checks are for store builds and are
+        # heavy; this APK only ever runs on the CI emulator.
+        run: |
+          set -o pipefail
+          ./gradlew assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --console=plain \
+            -Dorg.gradle.jvmargs="-Xmx6g -XX:MaxMetaspaceSize=2g -XX:+HeapDumpOnOutOfMemoryError" \
+            -Pkotlin.daemon.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g" \
+            -x lintVitalAnalyzeRelease -x lintVitalRelease 2>&1 \
+            | while IFS= read -r line; do printf '%(%H:%M:%S)T %s\n' -1 "$line"; done \
+            | tee ../gradle.log
+
+      - name: Install Maestro
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Enable hardware acceleration for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run flows on an Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          # ATD: Google's Automated Test Device image. No launcher or
+          # background apps, so no "Pixel Launcher isn't responding" dialog
+          # landing on top of the app, which is what sank the first runs.
+          api-level: 33
+          arch: x86_64
+          target: aosp_atd
+          profile: pixel_6
+          cores: 4
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash e2e/run-flows.sh android/app/build/outputs/apk/release/app-release.apk
+
+      # Job logs are not always reachable from where the pipeline is worked on;
+      # annotations are. On failure, surface the tail of whichever log matters.
+      - name: Summarise a failure as annotations
+        if: failure()
+        run: |
+          for f in gradle.log .maestro-output/maestro.log .maestro-output/screen.txt .maestro-output/logcat.txt; do
+            [ -f "$f" ] || continue
+            echo "::error title=Last lines of $f::$(tail -n 60 "$f" | cut -c1-300 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
+          done
+          [ -f gradle.log ] && echo "::notice title=Slowest-looking gradle tasks::$(grep '> Task' gradle.log | tail -n 25 | sed ':a;N;$!ba;s/\n/%0A/g')"
+          true
+
+      - name: Keep screenshots and logs from the flows
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: maestro-output
+          path: .maestro-output
+          if-no-files-found: ignore
+          retention-days: 14

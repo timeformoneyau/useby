@@ -1,3 +1,6 @@
+// First, so the CI flow-test build's test mode is in place before the app
+// loads. Empty in every real build; see the file for why.
+import './src/testing/e2eHook';
 import { registerRootComponent } from 'expo';
 
 import App from './App';

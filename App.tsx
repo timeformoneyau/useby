@@ -21,6 +21,7 @@ import AddItemScreen from './src/screens/AddItemScreen';
 import CaptureScreen from './src/screens/CaptureScreen';
 import ItemDetailScreen from './src/screens/ItemDetailScreen';
 import EditItemScreen from './src/screens/EditItemScreen';
+import UpdateBanner from './src/components/UpdateBanner';
 
 /**
  * since-fresh gated this navigator behind a Supabase auth stack and
@@ -90,6 +91,8 @@ export default function App() {
           <Stack.Screen name="EditItem" component={EditItemScreen} />
         </Stack.Navigator>
       </NavigationContainer>
+      {/* Above the navigator so it shows on whichever screen is open. */}
+      <UpdateBanner />
     </SafeAreaProvider>
   );
 }

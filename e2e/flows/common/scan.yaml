@@ -1,0 +1,13 @@
+# Scan one item. FIXTURE picks what the stand-in proxy answers (see
+# e2e/app/scenarios.ts). Ends on the Review & Save screen.
+appId: com.useby.app
+---
+- openLink: "useby://e2e?fixture=${FIXTURE}"
+- tapOn: "Scan item"
+- extendedWaitUntil:
+    visible: "Test camera · ${FIXTURE}"
+    timeout: 10000
+- tapOn: "Capture"
+- extendedWaitUntil:
+    visible: "Save item"
+    timeout: 15000

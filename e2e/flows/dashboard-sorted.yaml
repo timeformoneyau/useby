@@ -1,0 +1,46 @@
+# MUST-HAVE 2: the list puts whatever needs using soonest at the top.
+#
+# Items are added out of order; the list must come back most-urgent-first,
+# under the right group headings.
+appId: com.useby.app
+name: Dashboard sorted by expiry
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+- runFlow:
+    file: common/scan-and-save.yaml
+    env:
+      FIXTURE: milk        # 6 days left
+- runFlow:
+    file: common/scan-and-save.yaml
+    env:
+      FIXTURE: cheese      # 3 days past
+- runFlow:
+    file: common/scan-and-save.yaml
+    env:
+      FIXTURE: yoghurt     # 2 days left
+- runFlow:
+    file: common/scan-and-save.yaml
+    env:
+      FIXTURE: chicken     # today
+
+- assertVisible: "Past their date"
+- assertVisible: "Use soon"
+- assertVisible: "Later"
+- assertVisible: "Past by 3 days"
+- assertVisible: "2 days left"
+- assertVisible: "6 days left"
+
+- assertVisible:
+    text: "Chicken thighs"
+    below:
+      text: "Cheddar"
+- assertVisible:
+    text: "Greek yoghurt"
+    below:
+      text: "Chicken thighs"
+- assertVisible:
+    text: "Milk"
+    below:
+      text: "Greek yoghurt"

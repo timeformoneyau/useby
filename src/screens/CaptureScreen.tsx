@@ -122,8 +122,11 @@ export default function CaptureScreen() {
    * backlog. Without this, opening the camera to photograph the next thing
    * would greet you with the answer to something from five minutes ago — stale,
    * and an interruption rather than news. Anything older is still on Home.
+   *
+   * A lazy state initialiser rather than `useRef(Date.now())`: same value, read
+   * once on mount, but not an impure call during render (react-hooks/purity).
    */
-  const openedAt = useRef(Date.now()).current;
+  const [openedAt] = useState(() => Date.now());
   const showing = useMemo(
     () => latestSettled(scans, dismissed, openedAt),
     [scans, dismissed, openedAt],
