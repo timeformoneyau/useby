@@ -4,27 +4,30 @@
  * Screens must not import directly from storage. All persistence coordination
  * lives here.
  *
- * Ported from since-fresh with the cloud half removed: no sync queue, no
- * background sync, no notification scheduling. Every mutation is a local
- * AsyncStorage write, so the app is fully functional offline and has no
- * account concept. Supabase-backed sync is a later phase.
+ * Every mutation is one SQLite transaction in the local item database
+ * (`db/itemDatabase.ts`), applied one at a time, so two overlapping calls can
+ * no longer lose one another's write. Each records a mutation, a lifecycle
+ * event and a sync-outbox entry alongside the item; nothing sends the outbox
+ * yet. The app is fully functional offline and has no account concept.
+ * Hosted sync is a later phase.
  */
 
 import { UseByItem } from '../../types';
 import { CreateItemInput, DerivedItem } from './types';
-import { loadItems, saveItems } from './storage';
+import { itemDatabase } from './storage';
+import { newId } from './db/ids';
+import type { RemovalReason } from './db/itemDatabase';
 import { deriveItem } from './derive';
 import { applyItemEdit, editChangesAnything, type ItemEdit } from './edit';
 import { photoStore } from './photoStore';
 import { sortItems } from '../../utils/statusUtils';
+import { emitItemsChanged } from './events';
 
-function generateId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2);
-}
+export type { RemovalReason };
 
-/** Load all items, sorted by urgency, with derived fields attached. */
+/** Load all items on the list, sorted by urgency, with derived fields attached. */
 export async function getDerivedItems(): Promise<DerivedItem[]> {
-  const items = await loadItems();
+  const items = await (await itemDatabase()).listActive();
   return sortItems(items).map(deriveItem);
 }
 
@@ -37,8 +40,7 @@ export async function getDerivedItems(): Promise<DerivedItem[]> {
  * nothing and offers a way back rather than treating it as a fault.
  */
 export async function getDerivedItem(itemId: string): Promise<DerivedItem | null> {
-  const items = await loadItems();
-  const item = items.find((i) => i.id === itemId);
+  const item = await (await itemDatabase()).getActive(itemId);
   return item ? deriveItem(item) : null;
 }
 
@@ -46,7 +48,8 @@ export async function getDerivedItem(itemId: string): Promise<DerivedItem | null
 export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
   const now = new Date().toISOString();
   const item: UseByItem = {
-    id: generateId(),
+    // A UUID for new items. Items saved before SQLite keep their old ids.
+    id: newId(),
     name: input.name,
     expiryDate: input.expiryDate,
     dateType: input.dateType ?? 'unknown',
@@ -62,10 +65,10 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
     updatedAt: now,
   };
 
-  const existing = await loadItems();
-  await saveItems([...existing, item]);
+  const saved = await (await itemDatabase()).create(item, newId());
+  emitItemsChanged();
 
-  return deriveItem(item);
+  return deriveItem(saved);
 }
 
 /**
@@ -84,46 +87,58 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
  * Returns the updated item, or `null` if it is not there any more — reachable
  * when the item was removed from another screen while the editor was open, and
  * an ordinary answer rather than an error.
+ *
+ * The edit is applied to the row as it stands *inside* the transaction, not to
+ * a copy read earlier, so an edit can never resurrect or overwrite a change
+ * that landed while the editor was open.
  */
 export async function updateItem(
   itemId: string,
   edit: ItemEdit,
 ): Promise<DerivedItem | null> {
-  const items = await loadItems();
-  const existing = items.find((i) => i.id === itemId);
-  if (!existing) return null;
+  const { item, changed } = await (await itemDatabase()).update(
+    itemId,
+    // A Save that changes nothing is not a write. It should not bump
+    // `updatedAt` and it must not mark the date as the user's — opening the
+    // editor and pressing Save is not the same event as changing the date.
+    (existing) =>
+      editChangesAnything(existing, edit)
+        ? applyItemEdit(existing, edit, new Date().toISOString())
+        : null,
+    newId(),
+  );
+  if (changed) emitItemsChanged();
 
-  // A Save that changes nothing is not a write. It should not bump `updatedAt`
-  // and it must not mark the date as the user's — opening the editor and
-  // pressing Save is not the same event as changing the date.
-  if (!editChangesAnything(existing, edit)) return deriveItem(existing);
-
-  const updated = applyItemEdit(existing, edit, new Date().toISOString());
-  await saveItems(items.map((i) => (i.id === itemId ? updated : i)));
-
-  return deriveItem(updated);
+  return item ? deriveItem(item) : null;
 }
 
 /**
- * Remove an item from the list.
+ * Take an item off the list.
  *
  * Backs both user-facing actions: "Used" (the item was eaten, its job is
- * done) and "Delete" (it was added by mistake). since-fresh distinguished
- * these because marking a recurring chore done restarted its cycle — with
- * expiry-only items there is no cycle to restart, so both simply drop the
- * item. They stay separate in the UI because they mean different things.
+ * done) and "Delete" (it was added by mistake). On screen they behave
+ * identically — the item leaves Home and its photo is deleted. In the
+ * database they now differ: the row stays, marked `used` or `deleted`, with a
+ * lifecycle event recording which. `reason` defaults to `deleted`, the
+ * conservative reading, so a caller that does not say is never counted as
+ * eaten.
+ *
+ * Removing an item that is not on the list (already gone, a double tap) is a
+ * no-op, as it always was.
  */
-export async function removeItem(itemId: string): Promise<void> {
-  const items = await loadItems();
-  const going = items.find((i) => i.id === itemId);
-
+export async function removeItem(
+  itemId: string,
+  reason: RemovalReason = 'deleted',
+): Promise<void> {
   // Storage first, file second, and the order is load-bearing. If the process
   // dies between the two the result is a file nothing refers to, which the
   // start-up sweep collects and nobody ever sees. Reversed, it would leave an
   // item pointing at a file that is gone — a visible broken image, and the one
-  // failure the user would actually notice.
-  await saveItems(items.filter((i) => i.id !== itemId));
+  // failure the user would actually notice. The row's photo reference is
+  // cleared in the same commit as the status change.
+  const going = await (await itemDatabase()).remove(itemId, reason, newId());
   photoStore.remove(going?.photo);
+  if (going) emitItemsChanged();
 }
 
 /**
@@ -139,6 +154,5 @@ export async function removeItem(itemId: string): Promise<void> {
  * At start-up there is nothing in flight to race.
  */
 export async function sweepOrphanPhotos(): Promise<number> {
-  const items = await loadItems();
-  return photoStore.sweep(items.map((i) => i.photo));
+  return photoStore.sweep(await (await itemDatabase()).referencedPhotos());
 }

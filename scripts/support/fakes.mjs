@@ -1,5 +1,7 @@
+import { DatabaseSync } from 'node:sqlite';
+
 /**
- * In-memory stand-ins for the two native modules the item service reaches.
+ * Stand-ins for the three native modules the item service reaches.
  *
  * Installed on `globalThis.__USEBY_STUBS__` and picked up by the stub modules
  * in `app-loader.mjs`. Each test builds fresh ones with `install()`; the app
@@ -108,10 +110,118 @@ export function createMemoryFileSystem() {
   };
 }
 
+/**
+ * `SqlDriver` over a real SQLite engine (`node:sqlite`), for tests that drive
+ * `itemDatabase.ts` directly. `path` defaults to a private in-memory database;
+ * pass a file path to test persistence across a close and reopen.
+ *
+ * `failOn(predicate)` makes the next matching statement throw, once, before it
+ * runs — the way a full disk or a killed process looks to the caller. That is
+ * how interrupted transactions and migrations are provoked.
+ */
+export function createNodeDriver(path = ':memory:') {
+  const db = new DatabaseSync(path);
+  const log = [];
+  let failure = null;
+
+  function check(sql) {
+    log.push(sql);
+    if (failure && failure.predicate(sql)) {
+      const f = failure;
+      if (!f.sticky) failure = null;
+      throw new Error(f.message ?? `injected failure at: ${sql.trim().slice(0, 60)}`);
+    }
+  }
+
+  return {
+    db,
+    log,
+    failOn(predicate, { sticky = false, message } = {}) {
+      failure = { predicate, sticky, message };
+    },
+    clearFailure() {
+      failure = null;
+    },
+    close() {
+      db.close();
+    },
+    async exec(sql) {
+      check(sql);
+      db.exec(sql);
+    },
+    async run(sql, params = []) {
+      check(sql);
+      const r = db.prepare(sql).run(...params);
+      return { changes: Number(r.changes) };
+    },
+    async all(sql, params = []) {
+      check(sql);
+      return db.prepare(sql).all(...params);
+    },
+  };
+}
+
+/**
+ * `expo-sqlite`, as far as `expoDriver.ts` uses it: `openDatabaseAsync(name)`
+ * returning `execAsync` / `runAsync` / `getAllAsync`, over real SQLite.
+ * Databases are kept by name, so a second open (a "restart") sees the same
+ * data unless `reset()` is called. In-memory, so nothing touches disk.
+ */
+export function createNodeExpoSqlite() {
+  const open = new Map();
+  const state = { failNextOpen: false };
+  return {
+    open,
+    state,
+    async openDatabaseAsync(name) {
+      if (state.failNextOpen) {
+        state.failNextOpen = false;
+        throw new Error('injected open failure');
+      }
+      if (!open.has(name)) open.set(name, new DatabaseSync(':memory:'));
+      const db = open.get(name);
+      return {
+        async execAsync(sql) {
+          db.exec(sql);
+        },
+        async runAsync(sql, params = []) {
+          const r = db.prepare(sql).run(...params);
+          return { changes: Number(r.changes), lastInsertRowId: Number(r.lastInsertRowid) };
+        },
+        async getAllAsync(sql, params = []) {
+          return db.prepare(sql).all(...params);
+        },
+      };
+    },
+    /** The raw database behind `name`, for assertions. */
+    raw(name = 'useby.db') {
+      return open.get(name);
+    },
+    /**
+     * Empty every table but keep the connection and the schema, because the
+     * app's item database is opened once per process and holds on to it.
+     */
+    reset() {
+      for (const db of open.values()) {
+        const tables = db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+          .all();
+        db.exec('PRAGMA foreign_keys = OFF');
+        for (const { name } of tables) db.exec(`DELETE FROM "${name}"`);
+        db.exec('PRAGMA foreign_keys = ON');
+        const seq = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'").all();
+        if (seq.length) db.exec('DELETE FROM sqlite_sequence');
+      }
+      state.failNextOpen = false;
+    },
+  };
+}
+
 export function install() {
   const stubs = {
     asyncStorage: createMemoryAsyncStorage(),
     fileSystem: createMemoryFileSystem(),
+    sqlite: createNodeExpoSqlite(),
   };
   globalThis.__USEBY_STUBS__ = stubs;
   return stubs;

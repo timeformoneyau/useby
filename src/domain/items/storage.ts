@@ -1,61 +1,58 @@
+/**
+ * Where items live: the app's one SQLite item database, opened on first use.
+ *
+ * Until this slice items were a single JSON envelope under one AsyncStorage key
+ * (`@useby_v1_items`, envelope versions 1–4), rewritten whole on every change.
+ * That envelope is now read exactly once, imported into SQLite inside one
+ * verified transaction, and then left in place untouched — it is not deleted or
+ * rewritten by this build. See `db/itemDatabase.ts` for the import and
+ * `db/schema.ts` for the tables.
+ *
+ * Envelope history, kept because the import still reads every version of it:
+ * v2 added the optional `dateType`, v3 the optional `photo`, v4 the optional
+ * `dateUserSet`. None needed a migration: an older record simply lacks the
+ * field, and the import carries the absence across as-is.
+ *
+ * The wiring only. Every decision is in `db/`, which the offline suite loads
+ * directly.
+ */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { UseByItem } from '../../types';
+import { openExpoDriver } from './db/expoDriver';
+import { createItemDatabase, type ItemDatabase, type LegacyImportReport } from './db/itemDatabase';
 
-const STORAGE_KEY = '@useby_v1_items';
+let database: Promise<ItemDatabase> | null = null;
+let driver: ReturnType<typeof openExpoDriver> | null = null;
 
 /**
- * Envelope carries a version number so a future schema change can migrate
- * in place. since-fresh needed a migration module because it had shipped two
- * schema versions.
- *
- * Version 2 added the optional `dateType`. No migration step exists because
- * none is needed: a v1 record simply lacks the field and reads back as
- * `undefined`, which the UI presents as an unknown date type — accurate, since
- * those items were saved before we recorded what the pack said. The version is
- * bumped to record that the shape moved, not because anything rewrites it.
- *
- * Version 3 added the optional `photo`, on exactly the same terms: an older
- * record lacks it, reads back as `undefined`, and renders with no photo block —
- * which is true, because nothing was retained for it. Nothing rewrites existing
- * records and `isItem` does not inspect the field, so a v1 or v2 record is
- * still a valid item and keeps working untouched.
- *
- * Version 4 added the optional `dateUserSet`, on the same terms again. Its
- * absence on an older record is not a claim that the date came from the
- * packaging — it means nothing was tracking the question when that item was
- * saved, which is the honest reading and the one anything acting on date
- * semantics should take.
+ * One line per start-up, for device testing (`adb logcat -s ReactNativeJS |
+ * grep useby.storage`). Counts and outcomes only — never an item name.
  */
-const STORAGE_VERSION = 4;
-
-interface Envelope {
-  version: number;
-  items: UseByItem[];
+function logImport(report: LegacyImportReport, fresh: boolean): void {
+  if (!fresh) return;
+  console.log(`useby.storage ${JSON.stringify({ stage: 'legacy-import', ...report })}`);
 }
 
-function isItem(value: unknown): value is UseByItem {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return (
-    typeof v.id === 'string' &&
-    typeof v.name === 'string' &&
-    typeof v.expiryDate === 'string'
-  );
-}
-
-export async function loadItems(): Promise<UseByItem[]> {
-  try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as Partial<Envelope>;
-    if (!Array.isArray(parsed.items)) return [];
-    return parsed.items.filter(isItem);
-  } catch {
-    return [];
+/** The opened, migrated item database. Retries from scratch if opening failed. */
+export function itemDatabase(): Promise<ItemDatabase> {
+  if (!database) {
+    database = (async () => {
+      // The connection is kept across a failed start-up; only the
+      // migrate/import step is retried. Reopening would leak a connection.
+      if (!driver) driver = openExpoDriver().catch((e: unknown) => ((driver = null), Promise.reject(e)));
+      const db = createItemDatabase({
+        driver: await driver,
+        legacy: AsyncStorage,
+        onLegacyImport: logImport,
+      });
+      await db.ready();
+      return db;
+    })().catch((error: unknown) => {
+      database = null;
+      console.log(
+        `useby.storage ${JSON.stringify({ stage: 'open', outcome: 'failed', error: String(error) })}`,
+      );
+      throw error;
+    });
   }
-}
-
-export async function saveItems(items: UseByItem[]): Promise<void> {
-  const envelope: Envelope = { version: STORAGE_VERSION, items };
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(envelope));
+  return database;
 }

@@ -6,7 +6,7 @@ needs eating soonest sits at the top of the list.
 ## Status
 
 Phase 3A — local storage, plus one network call. Items live on the device in
-AsyncStorage and there is still no account and no sign-in. The single outbound
+a local SQLite database and there is still no account and no sign-in. The single outbound
 call is the camera scan: a photo goes to UseBy's own proxy, which calls the
 Anthropic API and returns the item name, date and date type for you to review
 before saving. Nothing is uploaded unless you take a photo, and the proxy keeps
@@ -163,6 +163,62 @@ scans that were actually wrong; the report names them and prints a stub. See
 The harness is measurement only. It reads exported logs, changes nothing, and a
 result from it does not authorise altering review behaviour.
 
+## Expiry reminders
+
+Local notifications only: scheduled on the phone, no push, no account, nothing
+sent anywhere. Settings are on the **Reminders** screen (the link in the Home
+header) and are stored on the device under their own key, apart from the items.
+
+**Defaults**
+
+| Setting | Default |
+|---|---|
+| Reminders | **Off** until you turn them on. Turning them on is the only thing that asks for notification permission; the app never asks on launch. |
+| The day before its Use By date | On |
+| On the Use By date | On |
+| The day after its Use By date | Off (opt-in) |
+| Time | 9:00 am, local phone time; adjustable in 15-minute steps |
+
+Wording says *when*, in the app's one date language, and never whether food is
+safe: "Your Milk reaches its Use By date tomorrow." / "…today." / "Your Milk
+passed its Use By date yesterday." The packaging's own wording (`dateType`)
+is not used, so a reminder never claims more than the pack did.
+
+**How scheduling works** (`src/domain/notifications/`)
+
+- `policy.ts` decides everything, purely: reminder dates on the local
+  calendar (never "minus 24 hours", so daylight-saving changes cannot move a
+  reminder to the wrong day or hour), wording, and which reminders are due.
+- `scheduler.ts` makes the phone's pending reminders match the saved items
+  exactly, by comparing and applying the difference. Each item and reminder
+  type has one fixed identifier, so a reminder is replaced, never duplicated.
+  Runs never overlap. It only reads items; item storage is untouched.
+- It runs at start-up, whenever the app comes back to the foreground, after
+  every save / edit / Used / Delete, and after any settings change. That is
+  also how a time-zone change, or permission changed in system settings, is
+  picked up.
+
+**Limits, stated plainly**
+
+- **Rolling window.** Only reminders in the next 30 days are handed to the
+  phone, soonest first, at most 60 at a time (iOS allows 64 pending; Android
+  limits alarms per app). Later ones are scheduled as the window rolls
+  forward each time UseBy is opened. If UseBy is not opened for over a month,
+  reminders beyond the window will not be set.
+- **Delivery is the phone's.** On Android, reminders are alarms the system may
+  hold back a little under Doze or battery optimisation. They survive a reboot
+  (expo-notifications restores them), but not a force-stop of the app until it
+  is next opened.
+- **Permission.** If notifications are refused or later turned off in system
+  settings, nothing is scheduled; the Reminders screen says so and links to
+  settings. Granting it again takes effect the next time UseBy is opened.
+- **Past and undated items.** Reminders whose time has already passed are
+  skipped; an item with no valid date gets none.
+- **Native module.** `expo-notifications` is native, so this needs a fresh
+  app build (the release pipeline's fingerprint check does this
+  automatically); it cannot arrive as an over-the-air update to an older
+  install.
+
 ## How releases work
 
 *Written for the product owner. No setup knowledge assumed.*
@@ -261,7 +317,7 @@ App.tsx                       navigation container (3 screens)
 src/types/                    UseByItem, scan contract, status labels, nav params
 src/config/proxy.ts           deployed proxy URL + deployment guard, from env
 src/domain/items/             service (the only entry point for mutations),
-                              AsyncStorage persistence, derived fields
+                              SQLite persistence (db/), derived fields
 src/domain/scan/              parse-expiry client + pure response→prefill mapping
 src/theme/                    design tokens: colour, type, spacing, radii
 src/utils/dateUtils.ts        date parsing/formatting
@@ -279,6 +335,46 @@ tools/scan-analysis/          offline analysis of exported scan logs (not app co
 
 Screens never touch storage directly — all mutations go through
 `src/domain/items/service.ts`.
+
+## Local item storage (SQLite)
+
+Items are stored in `useby.db` (expo-sqlite), not the AsyncStorage envelope
+(`@useby_v1_items`) that builds up to envelope v4 used. The schema and its
+reasoning are in `src/domain/items/db/schema.ts`; the rules are:
+
+- **One transaction per change, one change at a time.** Every read and write
+  goes through a single serial queue in `db/itemDatabase.ts`, and every
+  mutation is one `BEGIN IMMEDIATE … COMMIT`. Two overlapping writes can no
+  longer lose one another (the old load-modify-save-the-whole-array race).
+- **Used and Delete keep the row.** Both take the item off Home and delete its
+  photo exactly as before, but the row stays with status `used` or `deleted`
+  and a lifecycle event saying which. Home lists `active` rows only.
+- **Every change is a mutation with a client id**, recorded with its lifecycle
+  event and a `sync_outbox` entry in the same transaction. Replaying a mutation
+  id is a no-op. Nothing reads the outbox yet: there is no backend connection.
+- **New items get UUIDs.** Items saved before SQLite keep their original ids.
+- **The AsyncStorage envelope is imported once and never touched.** At first
+  open the envelope is copied into SQLite in one verified transaction (rows,
+  history, outbox, a raw snapshot of the envelope, and a completion marker).
+  Any failure rolls the whole import back and it is retried at the next open.
+  The AsyncStorage key itself is never written or removed by this build; it
+  stays on the phone as a second copy. One log line reports the outcome:
+
+  ```bash
+  adb logcat -d -s ReactNativeJS | grep useby.storage
+  ```
+
+  ```
+  useby.storage {"stage":"legacy-import","outcome":"imported","envelopeVersion":4,
+                 "imported":12,"alreadyPresent":0,"invalid":0,"duplicates":0,"at":"…"}
+  ```
+
+  `outcome` is `imported`, `absent` (nothing to import) or `unreadable` (the
+  envelope was not valid JSON; the old app showed an empty list for it too, and
+  the raw value is kept in `legacy_snapshot`). Counts only, never item names.
+
+`expo-sqlite` is a native module, so this needs a fresh Android build; it cannot
+arrive as an over-the-air update.
 
 ## Urgency model
 

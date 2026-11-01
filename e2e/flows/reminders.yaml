@@ -1,0 +1,120 @@
+# Expiry reminders: settings, permission, and scheduling that follows the items.
+#
+# The status line on the Reminders screen is read back from Android's own list
+# of pending notifications after each sync, so "2 reminders scheduled" here is
+# the OS's count, not the app's intention. Whether a reminder is actually
+# delivered at 9:00 is a real-phone check (see e2e/README.md).
+appId: com.useby.app
+name: Expiry reminders follow the items
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+
+# Off until turned on; nothing asked on launch.
+- tapOn: "Reminder settings"
+- extendedWaitUntil:
+    visible: "Reminders are off."
+    timeout: 10000
+
+# Turning them on is what asks for permission.
+- tapOn: "Use By reminders"
+- runFlow:
+    when:
+      visible: "Allow"
+    commands:
+      - tapOn: "Allow"
+- extendedWaitUntil:
+    visible: "No reminders due in the next few weeks."
+    timeout: 10000
+- tapOn: "Back"
+
+# Save an item 6 days out: the day before and the day itself.
+- runFlow:
+    file: common/scan-and-save.yaml
+    env:
+      FIXTURE: milk
+      NAME: Milk
+- tapOn: "Reminder settings"
+- extendedWaitUntil:
+    visible: "2 reminders scheduled"
+    timeout: 10000
+
+# Opt in to the day after: one more.
+- tapOn: "The day after"
+- extendedWaitUntil:
+    visible: "3 reminders scheduled"
+    timeout: 10000
+
+# A different time moves them, still three.
+- tapOn: "Later"
+- assertVisible: "9:15 am"
+- extendedWaitUntil:
+    visible: "3 reminders scheduled"
+    timeout: 10000
+
+# Restart: preferences and the OS's pending reminders reconcile to the same.
+- stopApp
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: ".*isn't responding.*"
+    commands:
+      - tapOn: "Wait"
+- extendedWaitUntil:
+    visible: "Milk"
+    timeout: 30000
+- tapOn: "Reminder settings"
+- extendedWaitUntil:
+    visible: "3 reminders scheduled"
+    timeout: 10000
+- assertVisible: "9:15 am"
+- tapOn: "Back"
+
+# Used it: its reminders go.
+- tapOn: "Milk"
+- extendedWaitUntil:
+    visible: "Edit Milk"
+    timeout: 10000
+- tapOn: "Mark Milk used"
+- extendedWaitUntil:
+    visible: "Nothing to keep an eye on yet."
+    timeout: 10000
+- tapOn: "Reminder settings"
+- extendedWaitUntil:
+    visible: "No reminders due in the next few weeks."
+    timeout: 10000
+
+# Off again: everything is cancelled.
+- tapOn: "Use By reminders"
+- extendedWaitUntil:
+    visible: "Reminders are off."
+    timeout: 10000
+
+# --- Permission refused ---------------------------------------------------
+- launchApp:
+    clearState: true
+    permissions:
+      notifications: deny
+- runFlow:
+    when:
+      visible: ".*isn't responding.*"
+    commands:
+      - tapOn: "Wait"
+- extendedWaitUntil:
+    visible: "Nothing to keep an eye on yet."
+    timeout: 30000
+- tapOn: "Reminder settings"
+- tapOn: "Use By reminders"
+- runFlow:
+    when:
+      visible: "Don.t allow"
+    commands:
+      - tapOn: "Don.t allow"
+# Stays off, says why, and offers the way to change it.
+- extendedWaitUntil:
+    visible: "Notifications are turned off for UseBy on this phone, so reminders can’t be shown."
+    timeout: 10000
+- assertVisible: "Open settings"
+- assertVisible: "Reminders are off."

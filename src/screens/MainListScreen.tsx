@@ -13,7 +13,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { UseByItem, RootStackParamList } from '../types';
 import { DerivedItem } from '../domain/items/types';
-import { getDerivedItems, removeItem } from '../domain/items/service';
+import { getDerivedItems, removeItem, type RemovalReason } from '../domain/items/service';
 import { groupItems, headerCount } from '../domain/items/presentation';
 import { emptyPrefill, failureMessage } from '../domain/scan/mapping';
 import { usePendingScans } from '../domain/scan/usePendingScans';
@@ -48,8 +48,8 @@ export default function MainListScreen() {
     }, [refresh]),
   );
 
-  async function handleRemove(item: UseByItem) {
-    await removeItem(item.id);
+  async function handleRemove(item: UseByItem, reason: RemovalReason) {
+    await removeItem(item.id, reason);
     refresh();
   }
 
@@ -98,9 +98,20 @@ export default function MainListScreen() {
           <View style={styles.mark} />
           <Text style={styles.brandName}>UseBy</Text>
         </View>
-        {items.length > 0 && (
-          <Text style={styles.headerCount}>{headerCount(items)}</Text>
-        )}
+        <View style={styles.headerRight}>
+          {items.length > 0 && (
+            <Text style={styles.headerCount}>{headerCount(items)}</Text>
+          )}
+          {/* Expiry reminder settings: a leaf, not a fifth primary screen. */}
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Reminders')}
+            accessibilityRole="button"
+            accessibilityLabel="Reminder settings"
+            hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+          >
+            <Text style={styles.headerLink}>Reminders</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {items.length === 0 ? (
@@ -152,8 +163,8 @@ export default function MainListScreen() {
             >
               <ItemCard
                 item={item}
-                onMarkUsed={handleRemove}
-                onDelete={handleRemove}
+                onMarkUsed={(i) => handleRemove(i, 'used')}
+                onDelete={(i) => handleRemove(i, 'deleted')}
                 onOpen={handleOpenItem}
                 isFirst={index === 0}
               />
@@ -217,6 +228,8 @@ const styles = StyleSheet.create({
     color: colours.ink,
   },
   headerCount: { fontSize: 13, fontFamily: fonts.regular, color: colours.textSub },
+  headerRight: { flexDirection: 'row', alignItems: 'baseline', gap: 14 },
+  headerLink: { fontSize: 13.5, fontFamily: fonts.semibold, color: colours.sage },
 
   list: { paddingHorizontal: 14 },
 

@@ -25,6 +25,7 @@ export const SCENARIOS = [
   'cheese',
   'unreadable',
   'server-error',
+  'slow-milk',
 ] as const;
 
 export type ScenarioName = (typeof SCENARIOS)[number];
@@ -86,7 +87,21 @@ export function scenarioResponse(name: ScenarioName, now: Date = new Date()): Ca
       };
     case 'server-error':
       return { status: 500, body: { ok: false, code: 'upstream_error' } };
+    case 'slow-milk':
+      // The same clean read as `milk`, answered slowly. Lets a flow see the
+      // draft sitting on Home as "Checking…" — proof that Single Item went
+      // back without waiting for the model.
+      return read('Milk', 6, 'use_by', now);
   }
+}
+
+/**
+ * How long the stand-in proxy takes to answer. Long enough everywhere that the
+ * waiting state is genuinely shown, as on a phone; much longer for
+ * `slow-milk`. Well inside the client's 30s timeout.
+ */
+export function scenarioLatencyMs(name: ScenarioName): number {
+  return name === 'slow-milk' ? 6000 : 700;
 }
 
 /** The scenario named by a `useby://e2e?fixture=<name>` link, if any. */

@@ -89,3 +89,33 @@ test('the editor dispatches popTo for Retake, not replace', () => {
   assert.match(source, /navigation\.popTo\('Capture', \{ replacing: scanId \}\)/);
   assert.doesNotMatch(source, /navigation\.replace\('Capture'/);
 });
+
+/* ---------------------------------------------------------------------------
+ * Leaving the camera: Single Item capture, Finish and Cancel all use
+ * popTo('Main'). Whatever shape the stack is in, that lands on Home with
+ * nothing left above it.
+ * ------------------------------------------------------------------------ */
+
+const home = () => StackActions.popTo('Main');
+
+test('a Single Item photo from Home returns straight to Home', () => {
+  assert.deepEqual(names(apply(stack(['Capture']), home())), ['Main']);
+});
+
+test('a Single Item retake opened from a Home draft returns to Home', () => {
+  // Home → editor → Retake swaps the editor for the camera; the photo goes Home.
+  const camera = apply(stack(['Add', { scanId: 'a' }]), retake('a'));
+  assert.deepEqual(names(apply(camera, home())), ['Main']);
+});
+
+test('Finish after a Multiple Items session with a card retake returns to Home', () => {
+  let state = stack(['Capture']);
+  state = apply(state, StackActions.push('Add', { scanId: 'a' }));
+  state = apply(state, retake('a'));
+  assert.deepEqual(names(apply(state, home())), ['Main']);
+});
+
+test('Home is the first screen, so going Home never leaves the app', () => {
+  const state = apply(stack(), home());
+  assert.deepEqual(names(state), ['Main']);
+});

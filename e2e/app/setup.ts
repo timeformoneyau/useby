@@ -17,6 +17,7 @@ import { SCAN_ID_HEADER } from '../../src/domain/scan/diagnostics';
 import {
   E2E_MARKER,
   scenarioForScan,
+  scenarioLatencyMs,
   scenarioFromUrl,
   scenarioResponse,
   setScenario,
@@ -30,9 +31,6 @@ if (!parseExpiryUrl.startsWith(STUB_ORIGIN)) {
   throw new Error(`${E2E_MARKER}: proxy URL is not the e2e stub (${parseExpiryUrl})`);
 }
 
-/** Long enough that the reading screen is genuinely shown, as on a phone. */
-const STUB_LATENCY_MS = 700;
-
 const realFetch = globalThis.fetch;
 
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -42,7 +40,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   // Claimed before the delay, not after it: see `scenarioForScan`.
   const sentHeaders = (init?.headers ?? {}) as Record<string, string>;
   const scenario = scenarioForScan(sentHeaders[SCAN_ID_HEADER]);
-  await new Promise((resolve) => setTimeout(resolve, STUB_LATENCY_MS));
+  await new Promise((resolve) => setTimeout(resolve, scenarioLatencyMs(scenario)));
   const { status, body } = scenarioResponse(scenario);
   return new Response(JSON.stringify(body), {
     status,

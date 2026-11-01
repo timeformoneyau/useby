@@ -19,6 +19,14 @@ import { latestSettled, type PendingScan } from '../domain/scan/pending';
 import { usePendingCounts, usePendingScans } from '../domain/scan/usePendingScans';
 import { warmProxy } from '../config/proxy';
 import CameraResultCard from '../components/CameraResultCard';
+import {
+  CAPTURE_MODES,
+  DEFAULT_CAPTURE_MODE,
+  afterCapture,
+  cameraExits,
+  finishLabel,
+  type CaptureMode,
+} from '../domain/scan/captureMode';
 import { colours, fonts, hit, radius } from '../theme';
 
 type CaptureRoute = RouteProp<RootStackParamList, 'Capture'>;
@@ -100,8 +108,29 @@ export default function CaptureScreen() {
   const [error, setError] = useState<string | null>(null);
   const busy = phase !== 'idle';
 
-  const { counts, line } = usePendingCounts();
-  const anyPending = counts.checking + counts.toReview > 0;
+  /**
+   * Single Item or Multiple Items — see `captureMode.ts`.
+   *
+   * Component state, so it lasts exactly one visit to the camera: switching
+   * survives every photo and a Retake that returns here, and a fresh visit
+   * starts in Single Item again.
+   */
+  const [mode, setMode] = useState<CaptureMode>(DEFAULT_CAPTURE_MODE);
+
+  /**
+   * Photos handed over during this visit. Drives the Finish button and its
+   * count; drafts from earlier visits are not this session's work.
+   */
+  const [capturedThisVisit, setCapturedThisVisit] = useState(0);
+  const exits = cameraExits(mode, capturedThisVisit);
+
+  /** Back to Home. Pending scans carry on; nothing is dropped or saved. */
+  function goHome() {
+    navigation.popTo('Main');
+  }
+
+  // "2 checking · 1 to review": the running count of what the queue holds.
+  const { line } = usePendingCounts();
 
   const scans = usePendingScans();
 
@@ -340,6 +369,12 @@ export default function CaptureScreen() {
     }
 
     setPhase('idle');
+    setCapturedThisVisit((n) => n + 1);
+
+    // Single Item: the photo is safely in the queue, so go straight back. The
+    // draft appears on Home as "Checking…" and then its result; nothing here
+    // waits for the model, and nothing is saved until it is reviewed.
+    if (afterCapture(mode) === 'return-home') goHome();
   }
 
   if (!permission) {
@@ -376,26 +411,58 @@ export default function CaptureScreen() {
     <SafeAreaView style={styles.shell}>
       <View style={styles.topRow}>
         {/*
-          "Done" once anything is outstanding, because by then leaving is not
-          abandoning a capture — it is finishing unpacking and going to look at
-          what came back. "Cancel" would misdescribe it.
+          The quiet way out without capturing anything. In a Multiple Items
+          session that has photos in it, Finish (by the shutter) takes over:
+          leaving then is finishing, not cancelling, and the wording says so.
         */}
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          disabled={busy}
-          style={styles.cancelBtn}
-          accessibilityRole="button"
-        >
-          <Text style={styles.cancelText}>{anyPending ? 'Done' : 'Cancel'}</Text>
-        </TouchableOpacity>
+        {exits.cancel ? (
+          <TouchableOpacity
+            onPress={goHome}
+            disabled={busy}
+            style={styles.cancelBtn}
+            accessibilityRole="button"
+          >
+            <Text style={styles.cancelText}>Cancel</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.cancelBtn} />
+        )}
 
         {/*
-          Only while a retake is still owed a photo. Someone who arrived here
-          from a draft needs to know the next shot replaces it rather than
-          adding one — and that the state is gone once they have taken it.
+          One photo or several. A state of this screen, not another screen, and
+          deliberately plain: two words, the current one filled in.
         */}
-        {retaking && <Text style={styles.retakeNote}>Replacing this scan</Text>}
+        <View style={styles.modeSwitch} accessibilityRole="radiogroup">
+          {CAPTURE_MODES.map(({ mode: option, label }) => {
+            const selected = option === mode;
+            return (
+              <TouchableOpacity
+                key={option}
+                onPress={() => setMode(option)}
+                disabled={busy}
+                style={[styles.modeOption, selected && styles.modeOptionSelected]}
+                accessibilityRole="radio"
+                accessibilityState={{ selected, checked: selected }}
+                accessibilityLabel={label}
+              >
+                <Text style={[styles.modeText, selected && styles.modeTextSelected]}>
+                  {label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Balances Cancel so the mode switch sits centred. */}
+        <View style={styles.cancelBtn} />
       </View>
+
+      {/*
+        Only while a retake is still owed a photo. Someone who arrived here
+        from a draft needs to know the next shot replaces it rather than
+        adding one — and that the state is gone once they have taken it.
+      */}
+      {retaking && <Text style={styles.retakeNote}>Replacing this scan</Text>}
 
       <View style={styles.preview}>
         <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
@@ -476,7 +543,20 @@ export default function CaptureScreen() {
           {phase === 'capturing' && <ActivityIndicator color={colours.sage} />}
         </TouchableOpacity>
 
-        <View style={styles.controlsSpacer} />
+        {exits.finish ? (
+          <TouchableOpacity
+            style={styles.finishBtn}
+            onPress={goHome}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel="Finish"
+            accessibilityHint="Back to the list. Everything you photographed stays there to review."
+          >
+            <Text style={styles.finishText}>{finishLabel(capturedThisVisit)}</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.controlsSpacer} />
+        )}
       </View>
     </SafeAreaView>
   );
@@ -540,8 +620,28 @@ const styles = StyleSheet.create({
   /* No `alignSelf` any more: the row lays this out now that it can hold a
      second item, and pinning it to the top would leave it sitting above the
      retake note beside it. */
-  cancelBtn: { paddingVertical: 12, paddingHorizontal: 10 },
+  cancelBtn: { paddingVertical: 12, paddingHorizontal: 10, minWidth: 64 },
+  modeSwitch: {
+    flexDirection: 'row',
+    backgroundColor: colours.cameraPanel,
+    borderRadius: 999,
+    padding: 3,
+  },
+  modeOption: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+  },
+  modeOptionSelected: { backgroundColor: colours.onSage },
+  modeText: {
+    fontSize: 13.5,
+    fontFamily: fonts.medium,
+    color: colours.cameraDim,
+  },
+  modeTextSelected: { color: colours.sage },
   retakeNote: {
+    textAlign: 'center',
+    paddingBottom: 6,
     fontSize: 13.5,
     fontFamily: fonts.regular,
     color: colours.cameraDim,
@@ -645,6 +745,18 @@ const styles = StyleSheet.create({
     color: colours.cameraDim,
   },
   controlsSpacer: { width: 104 },
+  finishBtn: {
+    width: 104,
+    paddingVertical: 12,
+    borderRadius: 999,
+    backgroundColor: colours.sage,
+    alignItems: 'center',
+  },
+  finishText: {
+    fontSize: 14.5,
+    fontFamily: fonts.semibold,
+    color: colours.onSage,
+  },
   shutter: {
     width: 78,
     height: 78,

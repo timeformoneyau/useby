@@ -58,6 +58,8 @@ tags:
 - extendedWaitUntil:
     visible: "Oat milk"
     timeout: 30000
+# The Home row shows the same retained photo after the restart.
+- assertVisible: "Photo of Oat milk"
 - tapOn: "Oat milk"
 - extendedWaitUntil:
     visible: "Edit Oat milk"

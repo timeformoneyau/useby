@@ -1,13 +1,15 @@
 # Retake replaces the draft it was opened from. It never adds a second one.
 #
-# The bug this guards: Retake used to open a bare camera, the new photo got a
-# new scan id, and one physical pack became two rows. Now the camera is told
-# which draft the next photo replaces.
+# Two entry paths. From a Home draft (Single Item mode): Retake opens the
+# camera, the replacement photo goes straight back Home, and Home holds one
+# draft. From the camera's result card (Multiple Items mode): Retake returns
+# to the camera already open — no second camera — and Finish reaches Home.
 appId: com.useby.app
 name: Retake replaces the draft, from Home or from the camera card
 tags:
   - must-have
 ---
+# --- From a Home draft, Single Item mode ------------------------------------
 - runFlow: common/launch-clean.yaml
 - runFlow:
     file: common/open-camera.yaml
@@ -15,12 +17,11 @@ tags:
       FIXTURE: milk
 - tapOn: "Capture"
 - extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- extendedWaitUntil:
     visible: "Milk"
     timeout: 15000
-
-# First path: reviewed later, from Home.
-- runFlow: common/close-camera.yaml
-- assertVisible: "JUST SCANNED"
 - tapOn: "Milk"
 - assertVisible: "Here's what we found"
 
@@ -33,17 +34,14 @@ tags:
     file: common/shoot.yaml
     env:
       FIXTURE: yoghurt
+# Single Item: back Home with the photo; the draft fills in there.
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
 - extendedWaitUntil:
     visible: "Greek yoghurt"
     timeout: 15000
-# The retake state is spent on that one photo.
-- assertNotVisible: "Replacing this scan"
-- assertVisible: "1 to review"
-
-# Home holds exactly one draft, and it is the retake.
-- runFlow: common/close-camera.yaml
 - assertVisible: "JUST SCANNED"
-- assertVisible: "Greek yoghurt"
 - assertNotVisible: "Milk"
 
 # Saving it gives one item.
@@ -56,17 +54,13 @@ tags:
 - assertNotVisible: "JUST SCANNED"
 - assertNotVisible: "Milk"
 
-# ---------------------------------------------------------------------------
-# The same, from the camera's result card.
-#
-# Retake from an editor opened off the card used to stack a second camera on
-# the first, so "Done" landed on the earlier camera instead of Home. It now
-# returns to the camera already open.
+# --- From the camera's result card, Multiple Items mode ---------------------
 - runFlow: common/launch-clean.yaml
 - runFlow:
     file: common/open-camera.yaml
     env:
       FIXTURE: milk
+- tapOn: "Multiple items"
 - tapOn: "Capture"
 - extendedWaitUntil:
     visible: "Milk"
@@ -74,6 +68,7 @@ tags:
 - tapOn: "Milk"
 - assertVisible: "Here's what we found"
 - tapOn: "Retake"
+# Back on the camera that was already open, still in Multiple Items.
 - extendedWaitUntil:
     visible: "Replacing this scan"
     timeout: 10000
@@ -89,7 +84,7 @@ tags:
 - assertNotVisible: "Replacing this scan"
 - assertVisible: "1 to review"
 
-# Save it from the card: back on the camera, with nothing outstanding.
+# Save it from the card: back on the camera, still in Multiple Items.
 - tapOn: "Greek yoghurt"
 - assertVisible: "Here's what we found"
 - tapOn: "Save item"
@@ -97,8 +92,8 @@ tags:
     visible: "Capture"
     timeout: 10000
 
-# Consecutive capture carries on as normal: the retake was spent on one photo,
-# so the next shot is an ordinary new item.
+# The retake was spent on one photo, so the next shot is an ordinary new item,
+# and the camera stays open for it.
 - runFlow:
     file: common/shoot.yaml
     env:
@@ -108,8 +103,8 @@ tags:
     timeout: 15000
 - assertVisible: "1 to review"
 
-# One "Done" goes straight to Home: there is no second camera underneath.
-- tapOn: "Done"
+# Finish goes straight to Home: there is no second camera underneath.
+- tapOn: "Finish"
 - extendedWaitUntil:
     visible: "Scan item"
     timeout: 10000

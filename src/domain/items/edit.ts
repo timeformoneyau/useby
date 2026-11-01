@@ -2,7 +2,7 @@
  * Editing a saved item: what changes, and what must survive untouched.
  *
  * Pure, and separated from `service.ts` for the usual reason — that module
- * imports AsyncStorage and the photo store, so it cannot be loaded offline,
+ * imports the item database and the photo store, so it cannot be loaded offline,
  * and the rules below are exactly the part worth testing. Everything here is a
  * statement about a record, not about storage.
  *
