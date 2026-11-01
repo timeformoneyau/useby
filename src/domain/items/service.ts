@@ -21,6 +21,7 @@ import { deriveItem } from './derive';
 import { applyItemEdit, editChangesAnything, type ItemEdit } from './edit';
 import { photoStore } from './photoStore';
 import { sortItems } from '../../utils/statusUtils';
+import { emitItemsChanged } from './events';
 
 export type { RemovalReason };
 
@@ -65,6 +66,8 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
   };
 
   const saved = await (await itemDatabase()).create(item, newId());
+  emitItemsChanged();
+
   return deriveItem(saved);
 }
 
@@ -93,7 +96,7 @@ export async function updateItem(
   itemId: string,
   edit: ItemEdit,
 ): Promise<DerivedItem | null> {
-  const { item } = await (await itemDatabase()).update(
+  const { item, changed } = await (await itemDatabase()).update(
     itemId,
     // A Save that changes nothing is not a write. It should not bump
     // `updatedAt` and it must not mark the date as the user's — opening the
@@ -104,6 +107,8 @@ export async function updateItem(
         : null,
     newId(),
   );
+  if (changed) emitItemsChanged();
+
   return item ? deriveItem(item) : null;
 }
 
@@ -133,6 +138,7 @@ export async function removeItem(
   // cleared in the same commit as the status change.
   const going = await (await itemDatabase()).remove(itemId, reason, newId());
   photoStore.remove(going?.photo);
+  if (going) emitItemsChanged();
 }
 
 /**

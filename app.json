@@ -35,6 +35,12 @@
         {
           "cameraPermission": "UseBy uses the camera to capture the use-by date on food packaging."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#1C655B"
+        }
       ]
     ],
     "extra": {

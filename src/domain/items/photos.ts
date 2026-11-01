@@ -54,6 +54,15 @@ export interface PhotoStore {
   retain(scanId: string, sourceUri: string): string | null;
   /** Absolute URI for an item's stored photo, or `null` if it has none. */
   uriFor(filename: string | undefined): string | null;
+  /**
+   * What to show for an item's photo, and why. See `PhotoState`.
+   *
+   * Checks the file is actually there, so a record naming a file that has
+   * gone is told apart from one that never had a photo — the two look the
+   * same on screen (a placeholder) but mean very different things when
+   * someone is diagnosing "my photo disappeared".
+   */
+  stateFor(filename: string | undefined): PhotoState;
   /** Delete an item's photo. Best effort; a failure leaves work for the sweep. */
   remove(filename: string | undefined): void;
   /**
@@ -64,6 +73,27 @@ export interface PhotoStore {
    */
   sweep(referenced: readonly (string | undefined)[]): number;
 }
+
+/**
+ * Why an item does or does not have a photo to show.
+ *
+ * - `ok` — a stored file this module wrote, present on disk.
+ * - `none` — the record names no photo. Ordinary for a manual add, and for
+ *   every item saved before durable photo retention existed: those were never
+ *   given one, and there is nothing to recover. Shown as a placeholder.
+ * - `invalid` — the record names something that is not one of our filenames.
+ *   Refused rather than rendered (it would be a path we did not write).
+ * - `missing` — one of our filenames, but the file is not there. That is the
+ *   case worth a log line: something deleted a photo an item still refers to.
+ *
+ * Every state but `ok` renders the same intentional placeholder. Nothing is
+ * ever regenerated or substituted.
+ */
+export type PhotoState =
+  | { kind: 'ok'; uri: string }
+  | { kind: 'none' }
+  | { kind: 'invalid' }
+  | { kind: 'missing'; filename: string };
 
 const PREFIX = 'scan-';
 const EXTENSION = '.jpg';
@@ -151,6 +181,19 @@ export function createPhotoStore(fs: PhotoFs): PhotoStore {
     uriFor(filename) {
       if (!filename || !isPhotoFilename(filename)) return null;
       return fs.uriFor(filename);
+    },
+
+    stateFor(filename) {
+      if (!filename) return { kind: 'none' };
+      if (!isPhotoFilename(filename)) return { kind: 'invalid' };
+      try {
+        if (!fs.exists(filename)) return { kind: 'missing', filename };
+        return { kind: 'ok', uri: fs.uriFor(filename) };
+      } catch {
+        // A filesystem that cannot even answer "is it there" has not shown us
+        // a photo either; report it the same way so it is visible in the log.
+        return { kind: 'missing', filename };
+      }
     },
 
     remove(filename) {

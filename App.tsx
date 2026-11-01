@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useFonts } from 'expo-font';
@@ -14,6 +15,8 @@ import { HankenGrotesk_700Bold } from '@expo-google-fonts/hanken-grotesk/700Bold
 import { InstrumentSerif_400Regular } from '@expo-google-fonts/instrument-serif/400Regular';
 import { RootStackParamList } from './src/types';
 import { sweepOrphanPhotos } from './src/domain/items/service';
+import { onItemsChanged } from './src/domain/items/events';
+import { reminderScheduler, startReminders } from './src/domain/notifications/reminders';
 import { colours } from './src/theme';
 
 import MainListScreen from './src/screens/MainListScreen';
@@ -21,12 +24,13 @@ import AddItemScreen from './src/screens/AddItemScreen';
 import CaptureScreen from './src/screens/CaptureScreen';
 import ItemDetailScreen from './src/screens/ItemDetailScreen';
 import EditItemScreen from './src/screens/EditItemScreen';
+import RemindersScreen from './src/screens/RemindersScreen';
 import UpdateBanner from './src/components/UpdateBanner';
 
 /**
- * since-fresh gated this navigator behind a Supabase auth stack and
- * bootstrapped expo-notifications here. Neither exists yet, so the app opens
- * straight onto the list — local-only, no sign-in step.
+ * since-fresh gated this navigator behind a Supabase auth stack. That does not
+ * exist yet, so the app opens straight onto the list — local-only, no sign-in
+ * step. Local expiry reminders are wired below; there is no push.
  */
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -65,6 +69,33 @@ export default function App() {
     void sweepOrphanPhotos().catch(() => {});
   }, []);
 
+  /**
+   * Expiry reminders follow the saved items.
+   *
+   * One reconciliation (`reminderScheduler.sync`) at start-up, every time the
+   * app returns to the foreground, and after every item change. Each pass makes
+   * the OS's pending reminders match the saved items and preferences exactly —
+   * cancelling anything obsolete, never duplicating — and rolls the scheduling
+   * window forward. Returning to the foreground also picks up a time-zone
+   * change or a permission granted or withdrawn in system settings.
+   *
+   * Never asks for permission: that happens only when the user turns
+   * reminders on.
+   */
+  useEffect(() => {
+    void startReminders().then(() => reminderScheduler.sync('startup'));
+    const appState = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void reminderScheduler.sync('active');
+    });
+    const items = onItemsChanged(() => {
+      void reminderScheduler.sync('items');
+    });
+    return () => {
+      appState.remove();
+      items();
+    };
+  }, []);
+
   const onLayout = useCallback(() => {
     // Proceed on error too: falling back to the system font is far better than
     // holding the splash forever over a font that failed to load.
@@ -89,6 +120,7 @@ export default function App() {
           <Stack.Screen name="Capture" component={CaptureScreen} />
           <Stack.Screen name="ItemDetail" component={ItemDetailScreen} />
           <Stack.Screen name="EditItem" component={EditItemScreen} />
+          <Stack.Screen name="Reminders" component={RemindersScreen} />
         </Stack.Navigator>
       </NavigationContainer>
       {/* Above the navigator so it shows on whichever screen is open. */}

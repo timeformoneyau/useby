@@ -389,3 +389,68 @@ test('the saved item carries the reviewed fields, not the scan plumbing', async 
   assert.equal('scanId' in input, false, 'scanId is not part of the item');
   assert.equal('photoUri' in input, false, 'nor is the temporary URI');
 });
+
+/* ---------------------------------------------------------------------------
+ * What to show for a saved item's photo, and why.
+ *
+ * Every state but `ok` renders the same placeholder, so the distinction lives
+ * here and in the `useby.photo` log line: a missing file is a fault worth
+ * chasing; no photo at all is an ordinary manual add or an item saved before
+ * durable retention existed.
+ * ------------------------------------------------------------------------ */
+
+test('a retained photo that is on disk is shown', () => {
+  const { fs, files } = fakeFs();
+  files.set('scan-p-abc.jpg', 'jpeg');
+  assert.deepEqual(createPhotoStore(fs).stateFor('scan-p-abc.jpg'), {
+    kind: 'ok',
+    uri: 'file:///documents/photos/scan-p-abc.jpg',
+  });
+});
+
+test('an item that never had a photo is "none", not a fault', () => {
+  const { fs } = fakeFs();
+  const store = createPhotoStore(fs);
+  // A manual add, and every item saved before durable retention: no field.
+  assert.deepEqual(store.stateFor(undefined), { kind: 'none' });
+  assert.deepEqual(store.stateFor(''), { kind: 'none' });
+});
+
+test('a recorded photo whose file has gone is "missing", and names the file', () => {
+  const { fs } = fakeFs();
+  assert.deepEqual(createPhotoStore(fs).stateFor('scan-p-gone.jpg'), {
+    kind: 'missing',
+    filename: 'scan-p-gone.jpg',
+  });
+});
+
+test('a value that is not one of our filenames is refused, never rendered', () => {
+  const { fs, files } = fakeFs();
+  files.set('../../secrets.jpg', 'x');
+  const store = createPhotoStore(fs);
+  assert.deepEqual(store.stateFor('../../secrets.jpg'), { kind: 'invalid' });
+  assert.deepEqual(store.stateFor('file:///cache/p-abc.jpg'), { kind: 'invalid' });
+});
+
+test('a filesystem that cannot answer reads as missing, not as a photo', () => {
+  const { fs } = fakeFs();
+  const store = createPhotoStore({
+    ...fs,
+    exists() {
+      throw new Error('io');
+    },
+  });
+  assert.equal(store.stateFor('scan-p-abc.jpg').kind, 'missing');
+});
+
+test('removing one item\'s photo leaves every other photo showing', () => {
+  const { fs, files } = fakeFs();
+  for (const id of ['p-a', 'p-b', 'p-c']) files.set(`scan-${id}.jpg`, 'jpeg');
+  const store = createPhotoStore(fs);
+
+  store.remove('scan-p-b.jpg');
+
+  assert.equal(store.stateFor('scan-p-a.jpg').kind, 'ok');
+  assert.equal(store.stateFor('scan-p-b.jpg').kind, 'missing');
+  assert.equal(store.stateFor('scan-p-c.jpg').kind, 'ok');
+});

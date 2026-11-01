@@ -224,4 +224,9 @@ export type RootStackParamList = {
    * device validation at risk to save a text input and a date button.
    */
   EditItem: { itemId: string };
+  /**
+   * Expiry reminder settings. A leaf off Home, like EditItem is off Item
+   * Detail — not a fifth primary screen.
+   */
+  Reminders: undefined;
 };

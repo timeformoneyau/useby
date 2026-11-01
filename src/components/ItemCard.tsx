@@ -13,6 +13,8 @@ import { UseByItem } from '../types';
 import { computeItemStatus } from '../utils/statusUtils';
 import { heroText, rowSubtitle } from '../domain/items/presentation';
 import { colours, fonts, hit } from '../theme';
+import PhotoThumb from './PhotoThumb';
+import { usePhotoState } from './usePhotoState';
 
 interface Props {
   item: UseByItem;
@@ -57,6 +59,7 @@ export default function ItemCard({
   isFirst,
 }: Props) {
   const status = computeItemStatus(item);
+  const photo = usePhotoState(item.photo, 'home');
   const { daysUntilDue, dueDate } = status;
 
   const isHot = daysUntilDue <= 0;
@@ -170,6 +173,22 @@ export default function ItemCard({
           >
             {hero}
           </Text>
+
+          {/*
+            The photo the item was saved from, so three rows of "Beef mince"
+            are three recognisable packs. Items with no photo — manual adds,
+            and anything saved before photos were kept — get the same
+            deliberate placeholder rather than an empty gap.
+          */}
+          <PhotoThumb
+            uri={photo.kind === 'ok' ? photo.uri : null}
+            width={36}
+            height={36}
+            radius={6}
+            label={`Photo of ${item.name}`}
+            where="home"
+            file={item.photo}
+          />
 
           <Text style={styles.name} numberOfLines={1}>
             {item.name}

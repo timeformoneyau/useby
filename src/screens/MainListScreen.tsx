@@ -98,9 +98,20 @@ export default function MainListScreen() {
           <View style={styles.mark} />
           <Text style={styles.brandName}>UseBy</Text>
         </View>
-        {items.length > 0 && (
-          <Text style={styles.headerCount}>{headerCount(items)}</Text>
-        )}
+        <View style={styles.headerRight}>
+          {items.length > 0 && (
+            <Text style={styles.headerCount}>{headerCount(items)}</Text>
+          )}
+          {/* Expiry reminder settings: a leaf, not a fifth primary screen. */}
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Reminders')}
+            accessibilityRole="button"
+            accessibilityLabel="Reminder settings"
+            hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+          >
+            <Text style={styles.headerLink}>Reminders</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {items.length === 0 ? (
@@ -217,6 +228,8 @@ const styles = StyleSheet.create({
     color: colours.ink,
   },
   headerCount: { fontSize: 13, fontFamily: fonts.regular, color: colours.textSub },
+  headerRight: { flexDirection: 'row', alignItems: 'baseline', gap: 14 },
+  headerLink: { fontSize: 13.5, fontFamily: fonts.semibold, color: colours.sage },
 
   list: { paddingHorizontal: 14 },
 

@@ -2,10 +2,10 @@
 #
 # The camera and the proxy are stand-ins (see e2e/README.md); everything in
 # between — resize, request, the pending-scan queue, response mapping, the
-# camera result card, the editor, saving — is the real app code.
+# editor, saving — is the real app code.
 #
-# Capture does not wait for the model. Each answer arrives on the camera as a
-# result card, and the editor opens only when the card is tapped.
+# Single Item mode (the default): the camera returns Home as soon as the photo
+# is taken; the draft fills in on Home and is reviewed from there.
 appId: com.useby.app
 name: Add an item by scanning
 tags:
@@ -13,7 +13,7 @@ tags:
 ---
 - runFlow: common/launch-clean.yaml
 
-# A clean read: card on the camera, editor prefilled, saved to the list.
+# A clean read: draft on Home, editor prefilled, saved to the list with its photo.
 - runFlow:
     file: common/scan-and-save.yaml
     env:
@@ -21,8 +21,9 @@ tags:
       NAME: Milk
 - assertVisible: "6 days left"
 - assertVisible: "Later"
+- assertVisible: "Photo of Milk"
 
-# The photo defeated the model: the card says so, and the editor opens empty
+# The photo defeated the model: the draft says so, and the editor opens empty
 # so the person types it in.
 - runFlow:
     file: common/open-camera.yaml
@@ -40,26 +41,24 @@ tags:
 - pressKey: Enter   # "Done": closes the keyboard; hideKeyboard presses Back on Android
 - tapOn: "Save item"
 - extendedWaitUntil:
-    visible: "Capture"
+    visible: "Butter"
     timeout: 10000
 
 # The scanner is down: the editor says so plainly. Backing out keeps the draft
-# — nothing is lost — and it waits on Home to be finished by hand.
+# — nothing is lost — and it is finished by hand from Home.
 - runFlow:
-    file: common/shoot.yaml
+    file: common/open-camera.yaml
     env:
       FIXTURE: server-error
+- tapOn: "Capture"
 - extendedWaitUntil:
     visible: "Couldn't read that one"
     timeout: 20000
 - tapOn: "Couldn't read that one"
 - assertVisible: "The scanner is unavailable right now. Type it in for the moment."
 - tapOn: "Back"
-- runFlow: common/close-camera.yaml
 - assertVisible: "JUST SCANNED"
 - assertVisible: "Butter"
-
-# Finish the failed draft from Home, by hand.
 - tapOn: "Couldn't read that one"
 - assertVisible: "The scanner is unavailable right now. Type it in for the moment."
 - tapOn:
@@ -72,7 +71,7 @@ tags:
     timeout: 10000
 - assertNotVisible: "JUST SCANNED"
 
-# No photo at all.
+# No photo at all. The row shows the intentional placeholder, not a gap.
 - tapOn: "Add without a photo"
 - assertVisible: "Add an item"
 - tapOn:
@@ -83,6 +82,7 @@ tags:
 - extendedWaitUntil:
     visible: "Bread"
     timeout: 10000
+- assertVisible: "No photo"
 - assertVisible: "Milk"
 - assertVisible: "Butter"
 - assertVisible: "Eggs"

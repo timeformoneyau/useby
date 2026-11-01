@@ -415,3 +415,52 @@ test('the camera card follows the latest answer while drafts are being saved', a
     'once a is saved the card falls back to b, never to nothing',
   );
 });
+
+/* ---------------------------------------------------------------------------
+ * Leaving the camera does not touch the queue.
+ *
+ * Single Item mode returns Home the moment the photo is queued, and Finish
+ * returns Home with scans still in flight. Both rely on the queue being owned
+ * by nothing on screen: the camera unsubscribing must not stop, drop or
+ * reorder anything, and Home subscribing afterwards must see every draft.
+ * ------------------------------------------------------------------------ */
+
+test('scans finish after the camera has gone, and Home sees every draft', async () => {
+  const b = bench({ cap: 3 });
+  let cameraSaw = 0;
+  const leaveCamera = b.queue.subscribe(() => {
+    cameraSaw += 1;
+  });
+
+  b.capture('a', 100);
+  b.capture('b', 200);
+  b.capture('c', 300);
+  b.capture('d', 400); // waits for a slot
+  leaveCamera(); // Finish (or a Single Item photo) — back to Home
+
+  let homeSaw = 0;
+  b.queue.subscribe(() => {
+    homeSaw += 1;
+  });
+
+  // Answers come back out of order, after the camera has gone.
+  for (const id of ['c', 'a', 'd', 'b']) {
+    while (!b.runner.inFlight().includes(id)) {
+      const first = b.runner.inFlight()[0];
+      const call = b.runner.calls.find((x) => x.job.scanId === first && !x.settled);
+      await b.runner.finish(first, readOf(call.job));
+    }
+    const call = b.runner.calls.find((x) => x.job.scanId === id && !x.settled);
+    if (call) await b.runner.finish(id, readOf(call.job));
+  }
+
+  assert.ok(cameraSaw > 0);
+  assert.ok(homeSaw > 0, 'Home is told as each answer lands');
+  assert.deepEqual(ids(b.queue), ['a', 'b', 'c', 'd'], 'shutter order, nothing dropped');
+  for (const id of ['a', 'b', 'c', 'd']) {
+    assert.equal(b.queue.get(id).status, 'ready');
+    assert.equal(b.queue.get(id).prefill.name, `Item from ${id}`);
+    assert.equal(b.queue.get(id).imageUri, `file:///cache/${id}.jpg`);
+  }
+  assert.equal(b.items.length, 0, 'nothing saved without review');
+});

@@ -2,7 +2,6 @@ import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,7 +14,8 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { DerivedItem } from '../domain/items/types';
 import { getDerivedItem, removeItem, type RemovalReason } from '../domain/items/service';
-import { photoStore } from '../domain/items/photoStore';
+import PhotoThumb from '../components/PhotoThumb';
+import { usePhotoState } from '../components/usePhotoState';
 import { dateWord, heroText, longDate } from '../domain/items/presentation';
 import { colours, fonts, hit, radius } from '../theme';
 
@@ -58,11 +58,13 @@ export default function ItemDetailScreen() {
   const [loading, setLoading] = useState(true);
 
   /**
-   * The photo can be missing even when the item names one — the file could have
-   * been lost to a failed write, or removed by something outside the app. The
-   * item still renders; only the block goes.
+   * The item's photo, resolved and checked against the disk. The file can be
+   * missing even when the item names one — lost to a failed write, or removed
+   * by something outside the app — and items saved before photos were kept
+   * have none at all. Either way the item still renders, with the standard
+   * placeholder in place of the photo; a missing file is logged.
    */
-  const [photoBroken, setPhotoBroken] = useState(false);
+  const photo = usePhotoState(item?.photo, 'detail');
 
   useFocusEffect(
     useCallback(() => {
@@ -150,8 +152,6 @@ export default function ItemDetailScreen() {
 
   const { daysUntilDue, dueDate } = item.status;
   const isPast = daysUntilDue < 0;
-  const photoUri = photoStore.uriFor(item.photo);
-  const showPhoto = photoUri !== null && !photoBroken;
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
@@ -192,17 +192,16 @@ export default function ItemDetailScreen() {
           {dateWord(isPast)} · {longDate(dueDate)}
         </Text>
 
-        {showPhoto && (
-          <Image
-            source={{ uri: photoUri }}
-            style={styles.photo}
-            resizeMode="cover"
-            accessibilityLabel={`Photo of ${item.name}`}
-            // The file can be gone even though the item names it. Drop the
-            // block rather than showing a broken frame.
-            onError={() => setPhotoBroken(true)}
-          />
-        )}
+        <PhotoThumb
+          uri={photo.kind === 'ok' ? photo.uri : null}
+          width="100%"
+          height={200}
+          radius={radius.chip}
+          label={`Photo of ${item.name}`}
+          where="detail"
+          file={item.photo}
+          style={styles.photo}
+        />
 
         <View style={styles.actions}>
           <TouchableOpacity
@@ -293,13 +292,7 @@ const styles = StyleSheet.create({
   /* A fixed, modest height. This is here to answer "which pack was this?", not
      to be the screen — a full-bleed photo would push the date and the actions
      below the fold for no gain. */
-  photo: {
-    width: '100%',
-    height: 200,
-    borderRadius: radius.chip,
-    marginTop: 18,
-    backgroundColor: colours.divider,
-  },
+  photo: { marginTop: 18 },
 
   actions: { marginTop: 28, gap: 10 },
   primaryBtn: {

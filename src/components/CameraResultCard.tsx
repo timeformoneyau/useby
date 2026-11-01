@@ -1,5 +1,6 @@
 import React from 'react';
-import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import PhotoThumb from './PhotoThumb';
 import { cameraResultLine, type PendingScan } from '../domain/scan/pending';
 import { longDate, shortDate } from '../domain/items/presentation';
 import { parseDate } from '../utils/dateUtils';
@@ -64,14 +65,16 @@ export default function CameraResultCard({
         accessibilityLabel={spoken}
         accessibilityHint="Opens this scan to review and save it"
       >
-        {scan.imageUri ? (
-          <Image source={{ uri: scan.imageUri }} style={styles.thumb} />
-        ) : (
-          // The cache directory can be reclaimed by the OS. A missing file
-          // costs the thumbnail and nothing else — never the card, and never
-          // the draft behind it.
-          <View style={[styles.thumb, styles.thumbMissing]} />
-        )}
+        {/* The cache directory can be reclaimed by the OS, or a file fail to
+            decode. Either costs the thumbnail and nothing else — never the
+            card, and never the draft behind it. */}
+        <PhotoThumb
+          uri={scan.imageUri ?? null}
+          width={THUMB}
+          height={THUMB}
+          radius={8}
+          where="camera"
+        />
 
         <View style={styles.text}>
           <Text style={styles.title} numberOfLines={1}>
@@ -140,13 +143,6 @@ const styles = StyleSheet.create({
     minHeight: hit.minTarget,
   },
 
-  thumb: {
-    width: THUMB,
-    height: THUMB,
-    borderRadius: 8,
-    backgroundColor: colours.cameraPanel,
-  },
-  thumbMissing: { opacity: 0.35 },
 
   text: { flex: 1, gap: 2 },
   title: {
