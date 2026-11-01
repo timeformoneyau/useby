@@ -26,7 +26,7 @@ npm start          # then press 'a' for Android
 npm run android    # or build and run a dev client directly
 npm run typecheck
 npm run lint
-npm test           # offline unit tests. No network, no key needed.
+npm test           # offline unit tests and the analysis harness. No network, no key.
 npm run verify     # everything CI's quick checks run, in one go
 ```
 
@@ -140,6 +140,29 @@ request under `"evt":"parse-expiry"`, carrying the same `scanId` as `id`. Betwee
 the two, a failed scan can be placed at capture, transport, upstream, parsing,
 validation or the model itself.
 
+### Analysing a testing session
+
+A whole session of these lines can be analysed offline in one command, rather
+than read by hand:
+
+```bash
+npm run analyse:scans -- ./logs --ground-truth ./ground-truth.json
+```
+
+It reads the `useby.trust` decision/outcome pairs, and reports dataset
+integrity, what the shadow gate would have auto-accepted, how often that would
+have been wrong, and — with an exact Clopper-Pearson bound — whether the sample
+is big enough for the answer to mean anything.
+
+Coverage, the rejection histogram and the false-accept rate all come off the
+export with no manual work. The one thing the logs never record is what a
+corrected date was corrected *to*, so a truth date has to be supplied for the
+scans that were actually wrong; the report names them and prints a stub. See
+[docs/scan-analysis.md](docs/scan-analysis.md).
+
+The harness is measurement only. It reads exported logs, changes nothing, and a
+result from it does not authorise altering review behaviour.
+
 ## How releases work
 
 *Written for the product owner. No setup knowledge assumed.*
@@ -251,6 +274,7 @@ src/testing/e2eHook.ts        empty in real builds; test mode attaches here
 scripts/                      offline tests (no network, no key) and CI checks
 e2e/                          flow-test mode, fixtures and Maestro flows
 .github/workflows/            ci, release, rollback, real-scan
+tools/scan-analysis/          offline analysis of exported scan logs (not app code)
 ```
 
 Screens never touch storage directly — all mutations go through
