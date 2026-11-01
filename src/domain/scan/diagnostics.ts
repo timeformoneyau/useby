@@ -228,3 +228,33 @@ export function scanTrace(
 ): void {
   console.log(`useby.scan ${JSON.stringify({ scanId, stage, ...entry })}`);
 }
+
+/**
+ * Why an item's photo did not show. One grep on a device:
+ *
+ *   adb logcat -d -s ReactNativeJS | grep useby.photo
+ *
+ * Written only when something is wrong — a record naming a file that is not
+ * there (`missing`), a value that is not one of our filenames (`invalid`), or
+ * a file that exists but would not decode (`render-failed`) — and once per
+ * file per app run, so a long list does not flood the log. Items that simply
+ * have no photo (`none`: manual adds, and everything saved before durable
+ * retention) are not logged: that is an expected state, not a fault.
+ *
+ * Carries the stored filename and where it was seen. Never the item name, for
+ * the same reason as every other line here.
+ */
+export type PhotoProblem = 'missing' | 'invalid' | 'render-failed';
+
+const photoProblemsSeen = new Set<string>();
+
+export function photoTrace(
+  problem: PhotoProblem,
+  where: 'home' | 'detail' | 'draft' | 'camera',
+  file: string | undefined,
+): void {
+  const key = `${problem}:${file ?? ''}`;
+  if (photoProblemsSeen.has(key)) return;
+  photoProblemsSeen.add(key);
+  console.log(`useby.photo ${JSON.stringify({ problem, where, file: file ?? null })}`);
+}

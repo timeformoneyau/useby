@@ -391,3 +391,59 @@ test('removing the last item empties the list', async () => {
   await service.removeItem(id);
   assert.deepEqual(await service.getDerivedItems(), []);
 });
+
+/* ---------------------------------------------------------------------------
+ * What Home and Item Detail will show for each item's photo.
+ * ------------------------------------------------------------------------ */
+
+test('a saved photo still resolves after a reload, for every item', async () => {
+  await saveScan({ scanId: 'p-1', name: 'One', expiryDate: day(1) });
+  await saveScan({ scanId: 'p-2', name: 'Two', expiryDate: day(2) });
+
+  // A cold start: nothing in memory, only what was persisted.
+  const list = await service.getDerivedItems();
+  for (const item of list) {
+    const state = photoStore.stateFor(item.photo);
+    assert.equal(state.kind, 'ok', item.name);
+    assert.equal(state.uri, `${PHOTOS}/${item.photo}`);
+  }
+});
+
+test('an item saved before photos were kept shows the placeholder, not a fault', async () => {
+  stubs.asyncStorage.data.set(
+    STORAGE_KEY,
+    JSON.stringify({ version: 2, items: [{ id: 'old', name: 'Jam', expiryDate: day(30), dateType: 'use_by' }] }),
+  );
+  const [jam] = await service.getDerivedItems();
+  assert.deepEqual(photoStore.stateFor(jam.photo), { kind: 'none' });
+});
+
+test('a manual add has no photo, by design', async () => {
+  const { photo } = await service.createItem({ name: 'Bread', expiryDate: day(2) });
+  assert.deepEqual(photoStore.stateFor(photo), { kind: 'none' });
+});
+
+test('a photo file lost from under its item reads as missing, and only that one', async () => {
+  await saveScan({ scanId: 'p-a', name: 'A', expiryDate: day(1) });
+  await saveScan({ scanId: 'p-b', name: 'B', expiryDate: day(2) });
+  stubs.fileSystem.files.delete(`${PHOTOS}/scan-p-a.jpg`);
+
+  const byName = Object.fromEntries((await service.getDerivedItems()).map((i) => [i.name, i]));
+  assert.deepEqual(photoStore.stateFor(byName.A.photo), { kind: 'missing', filename: 'scan-p-a.jpg' });
+  assert.equal(photoStore.stateFor(byName.B.photo).kind, 'ok');
+});
+
+test('Used / Delete, editing and the start-up sweep leave other items\' photos showing', async () => {
+  await saveScan({ scanId: 'p-1', name: 'One', expiryDate: day(1) });
+  await saveScan({ scanId: 'p-2', name: 'Two', expiryDate: day(2) });
+  await saveScan({ scanId: 'p-3', name: 'Three', expiryDate: day(3) });
+  const byName = () => Object.fromEntries(persisted().items.map((i) => [i.name, i]));
+
+  await service.updateItem(byName().Two.id, { name: 'Two edited' });
+  await service.removeItem(byName().One.id);
+  await service.sweepOrphanPhotos();
+
+  const left = await service.getDerivedItems();
+  assert.deepEqual(left.map((i) => i.name).sort(), ['Three', 'Two edited']);
+  for (const item of left) assert.equal(photoStore.stateFor(item.photo).kind, 'ok', item.name);
+});

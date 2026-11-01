@@ -3,13 +3,13 @@ import {
   AccessibilityInfo,
   Animated,
   Easing,
-  Image,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { pendingSummary, type PendingScan } from '../domain/scan/pending';
+import PhotoThumb from './PhotoThumb';
 import { colours, fonts, hit, radius } from '../theme';
 
 /**
@@ -123,14 +123,17 @@ function PendingRow({
 
         Shown for a scan still in flight too — the photo exists from the shutter,
         and seeing which item is being read is half of knowing the app kept up.
-        A missing file (the OS may reclaim the cache) degrades to a plain block:
+        A missing or unreadable file (the OS may reclaim the cache) degrades to the
+        standard no-photo placeholder:
         the row still works and the draft is still openable.
       */}
-      {scan.imageUri ? (
-        <Image source={{ uri: scan.imageUri }} style={styles.thumb} />
-      ) : (
-        <View style={[styles.thumb, styles.thumbMissing]} />
-      )}
+      <PhotoThumb
+        uri={scan.imageUri ?? null}
+        width={THUMB}
+        height={THUMB}
+        radius={7}
+        where="draft"
+      />
 
       <View style={styles.rowText}>
         <Text style={[styles.rowTitle, waiting && styles.rowTitleWaiting]} numberOfLines={1}>
@@ -259,13 +262,6 @@ const styles = StyleSheet.create({
   // read is not a date at all.
   dotFailed: { backgroundColor: colours.clayBorder },
 
-  thumb: {
-    width: THUMB,
-    height: THUMB,
-    borderRadius: 7,
-    backgroundColor: colours.divider,
-  },
-  thumbMissing: { opacity: 0.5 },
 
   rowText: { flex: 1, gap: 2 },
   rowTitle: {
