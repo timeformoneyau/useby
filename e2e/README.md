@@ -65,6 +65,7 @@ Fixtures: `milk`, `yoghurt`, `chicken`, `cheese`, `unreadable`,
 | `flows/dashboard-sorted.yaml` | Four shots in one Multiple items visit, Finish, each reviewed from Home; list sorted most-urgent-first under the right headings |
 | `flows/retake.yaml` | Retake replaces its draft from a Home draft (Single item: back Home, one draft) and from the camera card (Multiple items: back to the same camera, next shot is a new item, Finish reaches Home) |
 | `flows/item-detail-edit.yaml` | Item Detail shows the retained photo; editing the name keeps the item and its photo; photo on Home and Detail survive an app restart; Used it from Item Detail |
+| `flows/reminders.yaml` | Reminders off until turned on; turning on asks permission; saving an item schedules two (read back from Android's own pending list); opting in to the day after makes three; changing the time keeps three; a restart reconciles to the same; Used it clears them; turning off clears all; refused permission leaves them off with a way to settings |
 | `flows/mark-used-delete.yaml` | Row swipe: "Used it" removes; Delete asks, Cancel keeps, confirm removes |
 
 Shared steps are in `flows/common/`: `launch-clean`, `open-camera`, `shoot`,
@@ -75,7 +76,9 @@ changing the date through the wheel picker (the date round trip is covered by
 `scripts/item-lifecycle.test.mjs`); a photo file deleted from under a saved
 item, which a flow cannot arrange (covered by `scripts/photos.test.mjs` and
 `scripts/item-lifecycle.test.mjs`); and the real camera, which stays a by-hand
-check. Not covered because the features don't exist: barcode scanning,
+check, as is whether a reminder is actually *delivered* at its time (the
+flow checks what is scheduled with the OS, not the notification appearing).
+Not covered because the features don't exist: barcode scanning,
 recording an item as *wasted*.
 
 ## Running locally (optional)

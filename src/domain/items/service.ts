@@ -17,6 +17,7 @@ import { deriveItem } from './derive';
 import { applyItemEdit, editChangesAnything, type ItemEdit } from './edit';
 import { photoStore } from './photoStore';
 import { sortItems } from '../../utils/statusUtils';
+import { emitItemsChanged } from './events';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -64,6 +65,7 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
 
   const existing = await loadItems();
   await saveItems([...existing, item]);
+  emitItemsChanged();
 
   return deriveItem(item);
 }
@@ -100,6 +102,7 @@ export async function updateItem(
 
   const updated = applyItemEdit(existing, edit, new Date().toISOString());
   await saveItems(items.map((i) => (i.id === itemId ? updated : i)));
+  emitItemsChanged();
 
   return deriveItem(updated);
 }
@@ -124,6 +127,7 @@ export async function removeItem(itemId: string): Promise<void> {
   // failure the user would actually notice.
   await saveItems(items.filter((i) => i.id !== itemId));
   photoStore.remove(going?.photo);
+  if (going) emitItemsChanged();
 }
 
 /**
