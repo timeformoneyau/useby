@@ -304,11 +304,20 @@ export default function AddItemScreen() {
             camera, changes their mind and backs out, at which point the original
             would be gone and nothing would have replaced it. It is retired by
             the replacement, not by the intention to make one.
+
+            `popTo`, not `replace`. This editor is opened from Home *or* from
+            the camera's result card. From Home there is no camera underneath,
+            and `popTo` swaps this editor for one — exactly what `replace` did.
+            From the camera, `replace` stacked a second camera on top of the
+            first, so the first "Done" landed on the earlier camera instead of
+            Home. `popTo` goes back to that camera instead and hands it the
+            draft to replace, so there is only ever one. The stack shapes are
+            pinned in scripts/retake-navigation.test.mjs.
           */}
           {cameFromPhoto && (
             <TouchableOpacity
               style={styles.topBtn}
-              onPress={() => navigation.replace('Capture', { replacing: scanId })}
+              onPress={() => navigation.popTo('Capture', { replacing: scanId })}
             >
               <Text style={styles.retakeText}>Retake</Text>
             </TouchableOpacity>

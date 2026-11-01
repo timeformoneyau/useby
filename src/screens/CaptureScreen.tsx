@@ -127,9 +127,17 @@ export default function CaptureScreen() {
    * once on mount, but not an impure call during render (react-hooks/purity).
    */
   const [openedAt] = useState(() => Date.now());
+  // The draft a retake is about to replace is the photo being thrown away;
+  // showing it under "Replacing this scan" would invite tapping the wrong thing.
+  const replacingNow = route.params?.replacing;
   const showing = useMemo(
-    () => latestSettled(scans, dismissed, openedAt),
-    [scans, dismissed, openedAt],
+    () =>
+      latestSettled(
+        scans,
+        replacingNow ? new Set([...dismissed, replacingNow]) : dismissed,
+        openedAt,
+      ),
+    [scans, dismissed, openedAt, replacingNow],
   );
 
   /**
@@ -149,8 +157,24 @@ export default function CaptureScreen() {
    * readable and clearable within the tick of the tap, and a re-render is far
    * too late for that, while the header label only exists to be drawn. The same
    * split the save guard in the editor already makes, for the same reason.
+   *
+   * Read straight from the route: the param is cleared the moment the retake is
+   * spent (see `handleCapture`), so it is true exactly while one is owed.
    */
-  const [retaking, setRetaking] = useState(Boolean(route.params?.replacing));
+  const replacingParam = route.params?.replacing;
+  const retaking = Boolean(replacingParam);
+
+  /**
+   * A retake can also arrive at a camera that is already open.
+   *
+   * Review & Save opened from this screen's result card sends Retake back here
+   * (`popTo`) rather than stacking a second camera, so the request arrives as a
+   * change of params on a mounted screen rather than as a fresh mount. The ref
+   * follows the param so the next shutter press sees it.
+   */
+  useEffect(() => {
+    if (replacingParam) replacingRef.current = replacingParam;
+  }, [replacingParam]);
 
   // Spend the cold start while the camera is opening rather than on whatever
   // gets photographed first. Costs nothing and is allowed to fail — see
@@ -288,9 +312,10 @@ export default function CaptureScreen() {
     // after it is an ordinary new item.
     const replacing = replacingRef.current;
     replacingRef.current = undefined;
-
     if (replacing) {
-      setRetaking(false);
+      // Spent. Cleared from the params too, so the "Replacing this scan" label
+      // goes and a later retake is always seen as a change.
+      navigation.setParams({ replacing: undefined });
 
       // A retake is the third outcome a scan can have, and it means the result
       // was not good enough to work with — which is exactly as informative as a

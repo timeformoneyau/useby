@@ -49,7 +49,7 @@ not opened on the camera wait on Home under "JUST SCANNED".
 |---|---|
 | `flows/add-item.yaml` | Add by scan: clean read, unreadable label, scanner down (draft kept, finished by hand from Home); manual add |
 | `flows/dashboard-sorted.yaml` | Four shots in one camera visit, each reviewed from Home; list sorted most-urgent-first under the right headings |
-| `flows/retake.yaml` | Retake replaces its draft: one draft, then one item, never two |
+| `flows/retake.yaml` | Retake replaces its draft — from a Home draft and from the camera card — one draft, then one item; from the card it returns to the open camera, the next shot is a new item, and one Done reaches Home |
 | `flows/item-detail-edit.yaml` | Item Detail shows the retained photo; editing the name keeps the item and its photo; both survive an app restart; Used it from Item Detail |
 | `flows/mark-used-delete.yaml` | Row swipe: "Used it" removes; Delete asks, Cancel keeps, confirm removes |
 
