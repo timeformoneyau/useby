@@ -30,7 +30,6 @@ const NOW = new Date(2026, 9, 15, 12, 0, 0);
 mock.timers.enable({ apis: ['Date'], now: NOW });
 
 const service = await import('../src/domain/items/service.ts');
-const storage = await import('../src/domain/items/storage.ts');
 const { sortItems, computeItemStatus, secondaryLine } = await import(
   '../src/utils/statusUtils.ts'
 );
