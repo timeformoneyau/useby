@@ -1,0 +1,98 @@
+# Single Item / Multiple Items, and leaving the camera.
+#
+# - Cancel leaves without capturing anything.
+# - Single Item (the default) returns Home the moment the photo is taken. The
+#   `slow-milk` answer takes six seconds, so "Checking…" on Home proves the
+#   camera did not wait for it; the result then arrives on Home and waits for
+#   review. Nothing is saved by itself.
+# - Multiple Items keeps the camera open, counts what is pending, and Finish
+#   returns Home with every draft intact.
+# - A fresh visit starts in Single Item again.
+appId: com.useby.app
+name: Capture modes, Finish and Cancel
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+
+# Leave without capturing anything.
+- tapOn: "Scan item"
+- extendedWaitUntil:
+    visible: "Multiple items"
+    timeout: 10000
+- assertVisible: "Single item"
+- tapOn: "Cancel"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- assertNotVisible: "JUST SCANNED"
+
+# Single Item: one photo, straight back Home, before the answer exists.
+- runFlow:
+    file: common/open-camera.yaml
+    env:
+      FIXTURE: slow-milk
+- tapOn: "Capture"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 4000
+- assertVisible: "JUST SCANNED"
+- assertVisible: "Checking…"
+# The answer lands after we got home, on the right draft.
+- extendedWaitUntil:
+    visible: "Milk"
+    timeout: 20000
+- assertVisible: "Ready to review"
+# Reviewing is still required: the list itself is still empty.
+- assertVisible: "Nothing to keep an eye on yet."
+- tapOn: "Milk"
+- assertVisible: "Here's what we found"
+- tapOn: "Back"
+- assertVisible: "JUST SCANNED"
+- assertVisible: "Nothing to keep an eye on yet."
+
+# Multiple Items: the camera stays open after every photo.
+- runFlow: common/launch-clean.yaml
+- runFlow:
+    file: common/open-camera.yaml
+    env:
+      FIXTURE: milk
+- tapOn: "Multiple items"
+- tapOn: "Capture"
+- runFlow:
+    file: common/shoot.yaml
+    env:
+      FIXTURE: yoghurt
+- runFlow:
+    file: common/shoot.yaml
+    env:
+      FIXTURE: chicken
+- extendedWaitUntil:
+    visible: "3 to review"
+    timeout: 20000
+- assertVisible: "Finish \\(3\\)"
+- assertVisible: "Capture"
+
+# Finish: back Home, every draft still there, nothing saved.
+- tapOn: "Finish"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- assertVisible: "JUST SCANNED"
+- assertVisible: "Milk"
+- assertVisible: "Greek yoghurt"
+- assertVisible: "Chicken thighs"
+- assertVisible: "Nothing to keep an eye on yet."
+
+# A fresh visit starts in Single Item again: one photo goes straight Home.
+- runFlow:
+    file: common/open-camera.yaml
+    env:
+      FIXTURE: cheese
+- tapOn: "Capture"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "Cheddar"
+    timeout: 15000

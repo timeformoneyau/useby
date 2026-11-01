@@ -12,6 +12,7 @@ import { readFields, reasonForStatus, toPrefill } from '../src/domain/scan/mappi
 import {
   SCENARIOS,
   isoInDays,
+  scenarioLatencyMs,
   scenarioFromUrl,
   scenarioResponse,
 } from '../e2e/app/scenarios.ts';
@@ -62,4 +63,11 @@ test('scenario links', () => {
   assert.equal(scenarioFromUrl('useby://e2e?x=1&fixture=server-error'), 'server-error');
   assert.equal(scenarioFromUrl('useby://e2e?fixture=caviar'), null);
   assert.equal(scenarioFromUrl('useby://other?fixture=milk'), null);
+});
+
+test('slow-milk is milk, answered slowly but well inside the client timeout', () => {
+  assert.deepEqual(scenarioResponse('slow-milk', NOW), scenarioResponse('milk', NOW));
+  assert.ok(scenarioLatencyMs('slow-milk') >= 5000);
+  assert.ok(scenarioLatencyMs('slow-milk') < 30_000);
+  assert.ok(scenarioLatencyMs('milk') < scenarioLatencyMs('slow-milk'));
 });

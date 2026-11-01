@@ -38,19 +38,33 @@ pressing.
 
 ## How a scan looks to a flow
 
-Capture → the answer arrives on the camera as a **result card** → tapping the
-card opens Review & Save → Save returns to the camera → Done returns Home.
-Nothing opens by itself and nothing is saved without the review step. Drafts
-not opened on the camera wait on Home under "JUST SCANNED".
+The camera has two modes, chosen on the camera with "Single item" /
+"Multiple items". Every fresh visit starts in **Single item**.
+
+- **Single item:** Capture → straight back to Home → the draft appears under
+  "JUST SCANNED" as "Checking…", then its result → tap it → Review & Save →
+  Home.
+- **Multiple items:** Capture → the camera stays open, a running count
+  ("2 checking · 1 to review") and **Finish (n)** appear → answers arrive as a
+  result card on the camera → tapping the card opens Review & Save, and Save
+  returns to the camera → Finish returns Home with every draft intact.
+- **Cancel** (top-left) leaves without capturing anything.
+
+Nothing opens by itself and nothing is saved without the review step.
+
+Fixtures: `milk`, `yoghurt`, `chicken`, `cheese`, `unreadable`,
+`server-error`, and `slow-milk` (milk, answered after six seconds instead of
+0.7, so a flow can see a draft still "Checking…" on Home).
 
 ## Flows
 
 | File | Covers |
 |---|---|
-| `flows/add-item.yaml` | Add by scan: clean read, unreadable label, scanner down (draft kept, finished by hand from Home); manual add |
-| `flows/dashboard-sorted.yaml` | Four shots in one camera visit, each reviewed from Home; list sorted most-urgent-first under the right headings |
-| `flows/retake.yaml` | Retake replaces its draft — from a Home draft and from the camera card — one draft, then one item; from the card it returns to the open camera, the next shot is a new item, and one Done reaches Home |
-| `flows/item-detail-edit.yaml` | Item Detail shows the retained photo; editing the name keeps the item and its photo; both survive an app restart; Used it from Item Detail |
+| `flows/add-item.yaml` | Add by scan (Single item): clean read with its photo on the Home row, unreadable label, scanner down (draft kept and finished by hand), manual add showing the "No photo" placeholder |
+| `flows/capture-modes.yaml` | Cancel without capturing; Single item returns Home before the answer exists, which then lands on the right draft and still needs review; Multiple items stays open, counts, and Finish keeps every draft; a fresh visit is Single item again |
+| `flows/dashboard-sorted.yaml` | Four shots in one Multiple items visit, Finish, each reviewed from Home; list sorted most-urgent-first under the right headings |
+| `flows/retake.yaml` | Retake replaces its draft from a Home draft (Single item: back Home, one draft) and from the camera card (Multiple items: back to the same camera, next shot is a new item, Finish reaches Home) |
+| `flows/item-detail-edit.yaml` | Item Detail shows the retained photo; editing the name keeps the item and its photo; photo on Home and Detail survive an app restart; Used it from Item Detail |
 | `flows/mark-used-delete.yaml` | Row swipe: "Used it" removes; Delete asks, Cancel keeps, confirm removes |
 
 Shared steps are in `flows/common/`: `launch-clean`, `open-camera`, `shoot`,
@@ -58,7 +72,9 @@ Shared steps are in `flows/common/`: `launch-clean`, `open-camera`, `shoot`,
 
 Every flow starts from a cleared app (`common/launch-clean.yaml`). Not covered:
 changing the date through the wheel picker (the date round trip is covered by
-`scripts/item-lifecycle.test.mjs`), and the real camera, which stays a by-hand
+`scripts/item-lifecycle.test.mjs`); a photo file deleted from under a saved
+item, which a flow cannot arrange (covered by `scripts/photos.test.mjs` and
+`scripts/item-lifecycle.test.mjs`); and the real camera, which stays a by-hand
 check. Not covered because the features don't exist: barcode scanning,
 recording an item as *wasted*.
 

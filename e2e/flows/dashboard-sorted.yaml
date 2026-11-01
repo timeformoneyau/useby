@@ -1,6 +1,6 @@
 # MUST-HAVE 2: the list puts whatever needs using soonest at the top.
 #
-# Also the consecutive-capture path: four shots in one visit to the camera,
+# Also the Multiple Items path: four shots in one visit to the camera,
 # without waiting for any answer. Each draft must come back with its own
 # answer, wait on Home as its own row, and need its own review before it is
 # saved. Items are captured out of urgency order; the list must come back
@@ -15,6 +15,7 @@ tags:
     file: common/open-camera.yaml
     env:
       FIXTURE: milk          # 6 days left
+- tapOn: "Multiple items"
 - tapOn: "Capture"
 - runFlow:
     file: common/shoot.yaml
@@ -29,11 +30,15 @@ tags:
     env:
       FIXTURE: chicken       # today
 
-# All four were kept, and nothing was saved without review.
+# All four were kept, still on the camera, and nothing was saved without review.
 - extendedWaitUntil:
     visible: "4 to review"
     timeout: 20000
-- runFlow: common/close-camera.yaml
+- assertVisible: "Finish \\(4\\)"
+- tapOn: "Finish"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
 - assertVisible: "JUST SCANNED"
 - assertVisible: "Nothing to keep an eye on yet."
 

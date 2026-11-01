@@ -1,8 +1,8 @@
-# Leave the camera for Home. The button reads "Done" while anything is still
-# outstanding and "Cancel" when nothing is.
+# Leave the camera for Home: "Cancel" when this visit has taken nothing (or in
+# Single Item mode), "Finish" once a Multiple Items session has photos in it.
 appId: com.useby.app
 ---
-- tapOn: "Done|Cancel"
+- tapOn: "Cancel|Finish"
 - extendedWaitUntil:
     visible: "Scan item"
     timeout: 10000
