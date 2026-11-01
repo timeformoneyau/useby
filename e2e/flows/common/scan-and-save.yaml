@@ -1,12 +1,26 @@
-# Scan an item the stand-in proxy reads cleanly, save it, and land on the list.
+# Scan one item the stand-in proxy reads cleanly, open its result card on the
+# camera, save it from Review & Save, and return to Home.
+#   FIXTURE  which canned answer (e2e/app/scenarios.ts)
+#   NAME     the item name that answer carries
 appId: com.useby.app
 ---
 - runFlow:
-    file: scan.yaml
+    file: open-camera.yaml
     env:
       FIXTURE: ${FIXTURE}
+- tapOn: "Capture"
+# The result arrives on the camera as a card; nothing opens by itself.
+- extendedWaitUntil:
+    visible: "${NAME}"
+    timeout: 15000
+- tapOn: "${NAME}"
 - assertVisible: "Here's what we found"
 - tapOn: "Save item"
+# Save goes back to whatever opened the editor: here, the camera.
 - extendedWaitUntil:
-    visible: "Scan item"
+    visible: "Capture"
+    timeout: 10000
+- runFlow: close-camera.yaml
+- extendedWaitUntil:
+    visible: "${NAME}"
     timeout: 10000

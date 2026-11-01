@@ -97,6 +97,7 @@ export function scenarioFromUrl(url: string): ScenarioName | null {
 }
 
 let current: ScenarioName = 'milk';
+const listeners = new Set<() => void>();
 
 export function currentScenario(): ScenarioName {
   return current;
@@ -104,4 +105,50 @@ export function currentScenario(): ScenarioName {
 
 export function setScenario(name: ScenarioName): void {
   current = name;
+  for (const listener of listeners) listener();
+}
+
+/**
+ * Re-render on a fixture change, so the stand-in camera's label always names
+ * the fixture the next shutter will use. A flow waits for that label before
+ * pressing the shutter, which is how it knows a `useby://e2e` link has landed
+ * while the camera was already open.
+ */
+export function subscribeScenario(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/*
+ * Which answer belongs to which photo.
+ *
+ * Capture no longer waits for the answer: several scans can be in flight, a
+ * scan can wait for a concurrency slot, and the flow may have switched fixture
+ * for the next shot before an earlier request goes out. Reading the fixture
+ * when the request is answered would hand a scan whatever was picked *last*.
+ *
+ * So the fixture is fixed at the shutter, in shutter order, and claimed by the
+ * scan id the first time a request for that scan arrives. The queue starts
+ * requests in shutter order, and a retried request for the same scan id gets
+ * the same answer again. Requests with no scan id (the warm-up ping) claim
+ * nothing.
+ */
+const shutterQueue: ScenarioName[] = [];
+const claimed = new Map<string, ScenarioName>();
+
+/** Called by the stand-in camera at the moment it takes a picture. */
+export function recordShutter(): void {
+  shutterQueue.push(current);
+}
+
+/** The fixture fixed at this scan's shutter press. */
+export function scenarioForScan(scanId: string | undefined): ScenarioName {
+  if (!scanId) return current;
+  const already = claimed.get(scanId);
+  if (already) return already;
+  const scenario = shutterQueue.shift() ?? current;
+  claimed.set(scanId, scenario);
+  return scenario;
 }

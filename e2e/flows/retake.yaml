@@ -1,0 +1,60 @@
+# Retake replaces the draft it was opened from. It never adds a second one.
+#
+# The bug this guards: Retake used to open a bare camera, the new photo got a
+# new scan id, and one physical pack became two rows. Now the camera is told
+# which draft the next photo replaces.
+appId: com.useby.app
+name: Retake replaces the draft rather than duplicating it
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+- runFlow:
+    file: common/open-camera.yaml
+    env:
+      FIXTURE: milk
+- tapOn: "Capture"
+- extendedWaitUntil:
+    visible: "Milk"
+    timeout: 15000
+
+# Reviewed later, from Home. (Retake from an editor opened off the camera card
+# leaves a second camera on the stack, so "Done" lands on the first camera
+# rather than Home — an app navigation quirk reported separately, not tested
+# around here.)
+- runFlow: common/close-camera.yaml
+- assertVisible: "JUST SCANNED"
+- tapOn: "Milk"
+- assertVisible: "Here's what we found"
+
+# Wrong pack. Retake from the editor.
+- tapOn: "Retake"
+- extendedWaitUntil:
+    visible: "Replacing this scan"
+    timeout: 10000
+- runFlow:
+    file: common/shoot.yaml
+    env:
+      FIXTURE: yoghurt
+- extendedWaitUntil:
+    visible: "Greek yoghurt"
+    timeout: 15000
+# The retake state is spent on that one photo.
+- assertNotVisible: "Replacing this scan"
+- assertVisible: "1 to review"
+
+# Home holds exactly one draft, and it is the retake.
+- runFlow: common/close-camera.yaml
+- assertVisible: "JUST SCANNED"
+- assertVisible: "Greek yoghurt"
+- assertNotVisible: "Milk"
+
+# Saving it gives one item.
+- tapOn: "Greek yoghurt"
+- assertVisible: "Here's what we found"
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "2 days left"
+    timeout: 10000
+- assertNotVisible: "JUST SCANNED"
+- assertNotVisible: "Milk"

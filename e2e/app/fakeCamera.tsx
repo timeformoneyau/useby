@@ -11,11 +11,11 @@
  * Not covered, by design: the real camera, real autofocus, real lighting.
  * Those stay a by-hand check on a phone.
  */
-import React, { forwardRef, useImperativeHandle } from 'react';
+import React, { forwardRef, useImperativeHandle, useSyncExternalStore } from 'react';
 import { Image, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { FIXTURE_JPEG_BASE64 } from './fixtureImage';
-import { E2E_MARKER, currentScenario } from './scenarios';
+import { E2E_MARKER, currentScenario, recordShutter, subscribeScenario } from './scenarios';
 
 interface FakeCameraHandle {
   takePictureAsync(): Promise<{ uri: string; width: number; height: number }>;
@@ -23,8 +23,11 @@ interface FakeCameraHandle {
 
 export const CameraView = forwardRef<FakeCameraHandle, { style?: StyleProp<ViewStyle> }>(
   function FakeCameraView({ style }, ref) {
+    const scenario = useSyncExternalStore(subscribeScenario, currentScenario);
     useImperativeHandle(ref, () => ({
       async takePictureAsync() {
+        // The answer this photo will get is fixed now, at the shutter.
+        recordShutter();
         const uri = `${FileSystem.cacheDirectory}e2e-fixture.jpg`;
         await FileSystem.writeAsStringAsync(uri, FIXTURE_JPEG_BASE64, {
           encoding: FileSystem.EncodingType.Base64,
@@ -40,7 +43,7 @@ export const CameraView = forwardRef<FakeCameraHandle, { style?: StyleProp<ViewS
           style={StyleSheet.absoluteFill}
           resizeMode="contain"
         />
-        <Text style={styles.tag}>{`Test camera · ${currentScenario()}`}</Text>
+        <Text style={styles.tag}>{`Test camera · ${scenario}`}</Text>
       </View>
     );
   },

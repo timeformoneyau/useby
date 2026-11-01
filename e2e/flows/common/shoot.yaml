@@ -1,0 +1,18 @@
+# On the camera: switch the fixture, wait for the stand-in camera to show it,
+# press the shutter. Does not wait for the answer — the camera never does.
+# The fixture is fixed at the shutter (see e2e/app/scenarios.ts), so the next
+# shot can be set up while this one is still being read.
+appId: com.useby.app
+---
+- openLink: "useby://e2e?fixture=${FIXTURE}"
+- extendedWaitUntil:
+    visible: "Test camera · ${FIXTURE}"
+    timeout: 10000
+# The shutter is disabled for the moment a photo is being taken and resized.
+# A tap then would be swallowed, and the shot silently never happen.
+- extendedWaitUntil:
+    visible:
+      text: "Capture"
+      enabled: true
+    timeout: 10000
+- tapOn: "Capture"

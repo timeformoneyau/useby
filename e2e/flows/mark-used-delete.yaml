@@ -1,8 +1,8 @@
 # MUST-HAVE 3: take an item off the list.
 #
-# Today that is the row's swipe: "Used it" or "Delete". Recording *wasted*
-# is not built yet (it waits for the Item Detail screen); add it here when it
-# lands.
+# The row's swipe: "Used it" or "Delete". (Item Detail's Used it is covered in
+# item-detail-edit.yaml.) Recording *wasted* is not built yet; add it here
+# when it lands.
 appId: com.useby.app
 name: Mark an item used, delete another
 tags:
@@ -13,10 +13,12 @@ tags:
     file: common/scan-and-save.yaml
     env:
       FIXTURE: milk
+      NAME: Milk
 - runFlow:
     file: common/scan-and-save.yaml
     env:
       FIXTURE: yoghurt
+      NAME: Greek yoghurt
 
 # Used it: swipe the row, tap the action, it leaves the list.
 - swipe:

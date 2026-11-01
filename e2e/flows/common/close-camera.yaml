@@ -1,0 +1,8 @@
+# Leave the camera for Home. The button reads "Done" while anything is still
+# outstanding and "Cancel" when nothing is.
+appId: com.useby.app
+---
+- tapOn: "Done|Cancel"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000

@@ -16,7 +16,7 @@ import { parseExpiryUrl } from '../../src/config/proxy';
 import { SCAN_ID_HEADER } from '../../src/domain/scan/diagnostics';
 import {
   E2E_MARKER,
-  currentScenario,
+  scenarioForScan,
   scenarioFromUrl,
   scenarioResponse,
   setScenario,
@@ -39,9 +39,11 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
   if (!url.startsWith(STUB_ORIGIN)) return realFetch(input, init);
 
-  await new Promise((resolve) => setTimeout(resolve, STUB_LATENCY_MS));
+  // Claimed before the delay, not after it: see `scenarioForScan`.
   const sentHeaders = (init?.headers ?? {}) as Record<string, string>;
-  const { status, body } = scenarioResponse(currentScenario());
+  const scenario = scenarioForScan(sentHeaders[SCAN_ID_HEADER]);
+  await new Promise((resolve) => setTimeout(resolve, STUB_LATENCY_MS));
+  const { status, body } = scenarioResponse(scenario);
   return new Response(JSON.stringify(body), {
     status,
     headers: {

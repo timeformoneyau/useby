@@ -179,6 +179,7 @@ export default function EditItemScreen() {
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>Item</Text>
             <TextInput
+              testID="edit-item-name-input"
               style={[styles.input, nameFocused && styles.inputFocused]}
               placeholder="e.g. Milk"
               placeholderTextColor={colours.placeholder}

@@ -28,17 +28,39 @@ pressing the shutter. The names are in `e2e/app/scenarios.ts`: `milk`,
 relative to today. `scripts/e2e-scenarios.test.mjs` checks each canned answer
 against the real response contract.
 
+Capture does not wait for the answer, so the fixture is **fixed at the
+shutter**: the stand-in camera records it when it takes the picture, and the
+stand-in proxy hands it to the first request carrying that scan id. A flow can
+therefore switch fixture for the next shot while earlier ones are still being
+read. The camera's `Test camera · <fixture>` label re-renders on every switch;
+`common/shoot.yaml` waits for it (and for the shutter to be enabled) before
+pressing.
+
+## How a scan looks to a flow
+
+Capture → the answer arrives on the camera as a **result card** → tapping the
+card opens Review & Save → Save returns to the camera → Done returns Home.
+Nothing opens by itself and nothing is saved without the review step. Drafts
+not opened on the camera wait on Home under "JUST SCANNED".
+
 ## Flows
 
-| File | Must-have |
+| File | Covers |
 |---|---|
-| `flows/add-item.yaml` | Add by scan: clean read, unreadable label, scanner down; also manual add |
-| `flows/dashboard-sorted.yaml` | List sorted most-urgent-first, under the right headings |
-| `flows/mark-used-delete.yaml` | "Used it" removes; Delete asks, Cancel keeps, confirm removes |
+| `flows/add-item.yaml` | Add by scan: clean read, unreadable label, scanner down (draft kept, finished by hand from Home); manual add |
+| `flows/dashboard-sorted.yaml` | Four shots in one camera visit, each reviewed from Home; list sorted most-urgent-first under the right headings |
+| `flows/retake.yaml` | Retake replaces its draft: one draft, then one item, never two |
+| `flows/item-detail-edit.yaml` | Item Detail shows the retained photo; editing the name keeps the item and its photo; both survive an app restart; Used it from Item Detail |
+| `flows/mark-used-delete.yaml` | Row swipe: "Used it" removes; Delete asks, Cancel keeps, confirm removes |
 
-Every flow starts from a cleared app (`common/launch-clean.yaml`). Not yet
-covered, because the features don't exist: barcode scanning, recording an
-item as *wasted*. Add flows when they land.
+Shared steps are in `flows/common/`: `launch-clean`, `open-camera`, `shoot`,
+`close-camera`, `scan-and-save`.
+
+Every flow starts from a cleared app (`common/launch-clean.yaml`). Not covered:
+changing the date through the wheel picker (the date round trip is covered by
+`scripts/item-lifecycle.test.mjs`), and the real camera, which stays a by-hand
+check. Not covered because the features don't exist: barcode scanning,
+recording an item as *wasted*.
 
 ## Running locally (optional)
 
