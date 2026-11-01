@@ -37,10 +37,39 @@ pageId `2785672` in the UseBy space. **Do not read and re-emit the parent Build
 Log page as part of ordinary logging.** The archived 24–26 August history is
 read-only and must remain untouched unless explicitly instructed.
 
+This replaces the original "one `<h2>` entry per push, prepended to the parent
+page" convention, which is obsolete. If a branch still carries that older
+wording in this file, follow this version and the parent page, not it.
+
+## Build Plan
+
+The compact execution brief is the Confluence **Build Plan** (pageId
+`2752798`). It records which branch carries the current app, what is awaiting
+review or device validation, and the locked product decisions. **`main` is not
+necessarily the current app** — check the Build Plan's status table before
+assuming a feature is or is not built. Read only the sections a task needs.
+
 ## Project
 
 Expo SDK 54, Android-first. See README.md for the port history from
 `timeformoneyau/since-fresh`, what was stripped, and what's deferred.
+
+## Tests
+
+`npm test` runs every `scripts/*.test.mjs` with `node:test`, offline.
+
+- Modules with no value imports (`pending.ts`, `photos.ts`, `edit.ts`,
+  `saveScan.ts`, `trust.ts`, …) load directly under Node's type stripping.
+- Modules that reach AsyncStorage or `expo-file-system` (`service.ts`,
+  `storage.ts`, `photoStore.ts`, and `statusUtils.ts` through its
+  extensionless imports) are loaded through `scripts/support/app-loader.mjs`,
+  which compiles them with TypeScript and swaps those two native modules for
+  the in-memory fakes in `scripts/support/fakes.mjs`. Register it at the top
+  of the test file; see `scripts/item-lifecycle.test.mjs`. No app code is
+  stubbed beyond those two modules.
+- A `{ todo }` test documents a known gap that is deliberately not fixed yet.
+  It reports but does not fail. Do not convert one to a skip or delete it to
+  get green; fix the gap or leave it.
 
 ## Commit author identity — set this before committing
 
