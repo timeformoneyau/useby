@@ -1,8 +1,15 @@
 /**
  * Regression guards for a saved item's whole life: created, listed in urgency
  * order, edited, marked Used or Deleted — through the real `service.ts`,
- * `storage.ts` and `statusUtils.ts`, against in-memory AsyncStorage and an
- * in-memory filesystem.
+ * `storage.ts`, the SQLite item database and `statusUtils.ts`, against real
+ * SQLite (`node:sqlite`, in memory), in-memory AsyncStorage and an in-memory
+ * filesystem.
+ *
+ * "Persisted" below means what is in the SQLite `items` table, read straight
+ * from the engine rather than through the service — what a cold start would
+ * find. The AsyncStorage-era cases that seeded the old envelope mid-test now
+ * live in `storage-migration.test.mjs`, because that envelope is read once, at
+ * open, and never again.
  *
  * Until now these were device-test items only (see the note at the top of
  * `edit-items.test.mjs`): the pure edit rule was pinned, but nothing checked
@@ -12,7 +19,8 @@
  * up later — after a restart, or as someone else's empty photo frame.
  *
  * How it loads code that imports native modules: see `support/app-loader.mjs`.
- * No app code is changed or stubbed beyond AsyncStorage and expo-file-system.
+ * No app code is changed or stubbed beyond AsyncStorage, expo-file-system and
+ * expo-sqlite (which is real SQLite).
  *
  * The clock is frozen (Date only) so urgency is deterministic.
  */
@@ -35,8 +43,8 @@ const { sortItems, computeItemStatus, secondaryLine } = await import(
 );
 const { saveScannedItem } = await import('../src/domain/items/saveScan.ts');
 const { photoStore } = await import('../src/domain/items/photoStore.ts');
+const { rowToItem } = await import('../src/domain/items/db/rows.ts');
 
-const STORAGE_KEY = '@useby_v1_items';
 const PHOTOS = 'file:///doc/photos';
 
 /** YYYY-MM-DD, `n` days from the frozen today, in local time. */
@@ -47,10 +55,26 @@ function day(n) {
   return `${d.getFullYear()}-${mm}-${dd}`;
 }
 
-/** What is actually on "disk", re-read the way a cold start would. */
+/** What is actually in the database: the items still on the list, in stored order. */
 function persisted() {
-  const raw = stubs.asyncStorage.data.get(STORAGE_KEY);
-  return raw ? JSON.parse(raw) : null;
+  const db = stubs.sqlite.raw();
+  const items = db
+    .prepare("SELECT * FROM items WHERE status = 'active' ORDER BY rowid")
+    .all()
+    .map((row) => rowToItem(row));
+  return { items, version: db.prepare('PRAGMA user_version').get().user_version };
+}
+
+/** Every write the database has recorded: one mutation per change. */
+function writeCount() {
+  return stubs.sqlite.raw().prepare('SELECT COUNT(*) AS n FROM mutations').get().n;
+}
+
+/** Item rows of any status, keyed by id. */
+function allRows() {
+  return Object.fromEntries(
+    stubs.sqlite.raw().prepare('SELECT * FROM items').all().map((r) => [r.id, r]),
+  );
 }
 
 /** Save a scanned item the way the editor does: retain, create, release. */
@@ -72,6 +96,7 @@ async function saveScan({ scanId, name, expiryDate, dateType = 'use_by' }) {
 beforeEach(() => {
   stubs.asyncStorage.reset();
   stubs.fileSystem.reset();
+  stubs.sqlite.reset();
 });
 
 /* ---------------------------------------------------------------------------
@@ -151,7 +176,7 @@ test('a created item survives a reload, sorted and derived', async () => {
   await service.createItem({ name: 'Cheddar', expiryDate: day(-3), dateType: 'best_before', source: 'photo' });
 
   const env = persisted();
-  assert.equal(env.version, 4);
+  assert.equal(env.version, 1, 'SQLite schema version');
   assert.equal(env.items.length, 2);
 
   const list = await service.getDerivedItems();
@@ -170,42 +195,38 @@ test('saves in quick succession each get their own identity', async () => {
   assert.equal(persisted().items.length, 10);
 });
 
-test(
-  'overlapping writes do not lose an item',
-  {
-    todo:
-      'KNOWN GAP: every mutation is load → modify → save of the whole array with no ' +
-      'serialisation, so two overlapping writes lose one. Through the current UI it ' +
-      'needs two writes (e.g. Used on two rows) inside the few ms one AsyncStorage ' +
-      'write takes, so unlikely by hand — but it becomes real the moment anything ' +
-      'writes in the background. The planned SQLite slice removes it.',
-  },
-  async () => {
-    await Promise.all([
-      service.createItem({ name: 'A', expiryDate: day(1) }),
-      service.createItem({ name: 'B', expiryDate: day(2) }),
-    ]);
-    assert.equal(persisted().items.length, 2);
-  },
-);
+// Was a `todo` (KNOWN GAP) under the AsyncStorage envelope, whose every
+// mutation was load → modify → save of the whole array. Fixed by the SQLite
+// item database: one serial queue, one transaction per mutation. Broader
+// overlap cases are in `item-database.test.mjs`.
+test('overlapping writes do not lose an item', async () => {
+  await Promise.all([
+    service.createItem({ name: 'A', expiryDate: day(1) }),
+    service.createItem({ name: 'B', expiryDate: day(2) }),
+  ]);
+  assert.equal(persisted().items.length, 2);
+});
 
-test('records storage cannot read are dropped, not fatal', async () => {
-  stubs.asyncStorage.data.set(STORAGE_KEY, '{not json');
-  assert.deepEqual(await service.getDerivedItems(), []);
+test('overlapping creates, edits and removals all land', async () => {
+  const seed = [];
+  for (let i = 0; i < 6; i += 1) {
+    seed.push(await service.createItem({ name: `Item ${i}`, expiryDate: day(i + 1) }));
+  }
+  await Promise.all([
+    service.createItem({ name: 'New 1', expiryDate: day(3) }),
+    service.updateItem(seed[0].id, { name: 'Renamed 0' }),
+    service.removeItem(seed[1].id, 'used'),
+    service.createItem({ name: 'New 2', expiryDate: day(4) }),
+    service.updateItem(seed[2].id, { expiryDate: day(9) }),
+    service.removeItem(seed[3].id, 'deleted'),
+    service.updateItem(seed[0].id, { expiryDate: day(8) }),
+  ]);
 
-  stubs.asyncStorage.data.set(
-    STORAGE_KEY,
-    JSON.stringify({
-      version: 4,
-      items: [
-        { id: 'ok', name: 'Milk', expiryDate: day(1) },
-        { id: 'bad', name: 'No date' },
-        null,
-        'junk',
-      ],
-    }),
-  );
-  assert.deepEqual((await service.getDerivedItems()).map((i) => i.id), ['ok']);
+  const names = persisted().items.map((i) => i.name).sort();
+  assert.deepEqual(names, ['Item 2', 'Item 4', 'Item 5', 'New 1', 'New 2', 'Renamed 0']);
+  const renamed = persisted().items.find((i) => i.id === seed[0].id);
+  assert.equal(renamed.expiryDate, day(8), 'both edits to one item landed, neither lost');
+  assert.equal(persisted().items.find((i) => i.id === seed[2].id).expiryDate, day(9));
 });
 
 /* ---------------------------------------------------------------------------
@@ -271,15 +292,15 @@ test('an edited item\'s photo survives the start-up sweep', async () => {
 
 test('a Save that changes nothing writes nothing', async () => {
   const created = await service.createItem({ name: 'Milk', expiryDate: day(5) });
-  const writesBefore = stubs.asyncStorage.writes.length;
-  const rawBefore = stubs.asyncStorage.data.get(STORAGE_KEY);
+  const writesBefore = writeCount();
+  const rowBefore = allRows()[created.id];
 
   mock.timers.tick(60_000);
   const result = await service.updateItem(created.id, { name: '  Milk ', expiryDate: day(5) });
 
   assert.equal(result.id, created.id);
-  assert.equal(stubs.asyncStorage.writes.length, writesBefore);
-  assert.equal(stubs.asyncStorage.data.get(STORAGE_KEY), rawBefore);
+  assert.equal(writeCount(), writesBefore);
+  assert.deepEqual(allRows()[created.id], rowBefore, 'row untouched, revision included');
   assert.equal(persisted().items[0].dateUserSet, undefined);
 });
 
@@ -303,25 +324,12 @@ test('editing one item leaves every other item byte-for-byte alone', async () =>
 test('editing an item removed elsewhere is an ordinary miss, not a write', async () => {
   const created = await service.createItem({ name: 'Milk', expiryDate: day(5) });
   await service.removeItem(created.id);
-  const writes = stubs.asyncStorage.writes.length;
+  const writes = writeCount();
 
   assert.equal(await service.updateItem(created.id, { name: 'Oat milk' }), null);
-  assert.equal(stubs.asyncStorage.writes.length, writes);
+  assert.equal(writeCount(), writes);
   assert.deepEqual(persisted().items, []);
-});
-
-test('a record from before photos and date types edits and saves safely', async () => {
-  stubs.asyncStorage.data.set(
-    STORAGE_KEY,
-    JSON.stringify({ version: 1, items: [{ id: 'old', name: 'Jam', expiryDate: day(30) }] }),
-  );
-  await service.updateItem('old', { expiryDate: day(20) });
-
-  const env = persisted();
-  assert.equal(env.version, 4);
-  assert.deepEqual(Object.keys(env.items[0]).sort(), [
-    'dateUserSet', 'expiryDate', 'id', 'name', 'updatedAt',
-  ]);
+  assert.equal(allRows()[created.id].name, 'Milk', 'the removed record was not edited');
 });
 
 /* ---------------------------------------------------------------------------
@@ -349,6 +357,54 @@ test('Used / Delete removes that item, its photo, and nothing else', async () =>
   assert.deepEqual(stubs.fileSystem.deleted, [`${PHOTOS}/scan-p-milk.jpg`]);
   assert.ok(stubs.fileSystem.files.has(`${PHOTOS}/scan-p-ham.jpg`));
   assert.equal(await service.getDerivedItem(milk.id), null);
+});
+
+test('Used and Delete look the same on screen but are recorded differently', async () => {
+  await saveScan({ scanId: 'p-milk', name: 'Milk', expiryDate: day(6) });
+  await saveScan({ scanId: 'p-ham', name: 'Ham', expiryDate: day(2) });
+  const { items } = persisted();
+  const milk = items.find((i) => i.name === 'Milk');
+  const ham = items.find((i) => i.name === 'Ham');
+
+  await service.removeItem(milk.id, 'used');
+  await service.removeItem(ham.id, 'deleted');
+
+  assert.deepEqual(await service.getDerivedItems(), [], 'both leave the list');
+  const rows = allRows();
+  assert.equal(rows[milk.id].status, 'used');
+  assert.equal(rows[ham.id].status, 'deleted');
+  assert.equal(rows[milk.id].photo, null, 'no row names a file that has gone');
+  assert.equal(stubs.fileSystem.deleted.length, 2, 'both photos deleted, as before');
+
+  const events = stubs.sqlite
+    .raw()
+    .prepare('SELECT item_id, kind FROM item_events ORDER BY seq')
+    .all()
+    .map((e) => `${e.item_id === milk.id ? 'milk' : 'ham'}:${e.kind}`);
+  assert.deepEqual(events, ['milk:created', 'ham:created', 'milk:used', 'ham:deleted']);
+});
+
+test('a removal with no reason given is recorded as deleted, never as eaten', async () => {
+  const { id } = await service.createItem({ name: 'Bread', expiryDate: day(1) });
+  await service.removeItem(id);
+  assert.equal(allRows()[id].status, 'deleted');
+});
+
+test('new items get UUIDs; every mutation is queued for a future sync', async () => {
+  const { id } = await service.createItem({ name: 'Bread', expiryDate: day(1) });
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  await service.updateItem(id, { name: 'Rye' });
+  await service.removeItem(id, 'used');
+
+  const db = stubs.sqlite.raw();
+  const outbox = db
+    .prepare('SELECT m.kind, o.state FROM sync_outbox o JOIN mutations m ON m.id = o.mutation_id ORDER BY o.seq')
+    .all()
+    .map((r) => `${r.kind}:${r.state}`);
+  assert.deepEqual(outbox, ['create:pending', 'edit:pending', 'use:pending']);
+  const revisions = db.prepare('SELECT base_revision FROM mutations ORDER BY rowid').all();
+  assert.deepEqual(revisions.map((r) => r.base_revision), [null, 1, 2]);
+  assert.equal(db.prepare('SELECT revision FROM items WHERE id = ?').get(id).revision, 3);
 });
 
 test('the record goes before the file, so a crash cannot leave a broken image', async () => {

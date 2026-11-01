@@ -6,7 +6,7 @@ needs eating soonest sits at the top of the list.
 ## Status
 
 Phase 3A — local storage, plus one network call. Items live on the device in
-AsyncStorage and there is still no account and no sign-in. The single outbound
+a local SQLite database and there is still no account and no sign-in. The single outbound
 call is the camera scan: a photo goes to UseBy's own proxy, which calls the
 Anthropic API and returns the item name, date and date type for you to review
 before saving. Nothing is uploaded unless you take a photo, and the proxy keeps
@@ -261,7 +261,7 @@ App.tsx                       navigation container (3 screens)
 src/types/                    UseByItem, scan contract, status labels, nav params
 src/config/proxy.ts           deployed proxy URL + deployment guard, from env
 src/domain/items/             service (the only entry point for mutations),
-                              AsyncStorage persistence, derived fields
+                              SQLite persistence (db/), derived fields
 src/domain/scan/              parse-expiry client + pure response→prefill mapping
 src/theme/                    design tokens: colour, type, spacing, radii
 src/utils/dateUtils.ts        date parsing/formatting
@@ -279,6 +279,46 @@ tools/scan-analysis/          offline analysis of exported scan logs (not app co
 
 Screens never touch storage directly — all mutations go through
 `src/domain/items/service.ts`.
+
+## Local item storage (SQLite)
+
+Items are stored in `useby.db` (expo-sqlite), not the AsyncStorage envelope
+(`@useby_v1_items`) that builds up to envelope v4 used. The schema and its
+reasoning are in `src/domain/items/db/schema.ts`; the rules are:
+
+- **One transaction per change, one change at a time.** Every read and write
+  goes through a single serial queue in `db/itemDatabase.ts`, and every
+  mutation is one `BEGIN IMMEDIATE … COMMIT`. Two overlapping writes can no
+  longer lose one another (the old load-modify-save-the-whole-array race).
+- **Used and Delete keep the row.** Both take the item off Home and delete its
+  photo exactly as before, but the row stays with status `used` or `deleted`
+  and a lifecycle event saying which. Home lists `active` rows only.
+- **Every change is a mutation with a client id**, recorded with its lifecycle
+  event and a `sync_outbox` entry in the same transaction. Replaying a mutation
+  id is a no-op. Nothing reads the outbox yet: there is no backend connection.
+- **New items get UUIDs.** Items saved before SQLite keep their original ids.
+- **The AsyncStorage envelope is imported once and never touched.** At first
+  open the envelope is copied into SQLite in one verified transaction (rows,
+  history, outbox, a raw snapshot of the envelope, and a completion marker).
+  Any failure rolls the whole import back and it is retried at the next open.
+  The AsyncStorage key itself is never written or removed by this build; it
+  stays on the phone as a second copy. One log line reports the outcome:
+
+  ```bash
+  adb logcat -d -s ReactNativeJS | grep useby.storage
+  ```
+
+  ```
+  useby.storage {"stage":"legacy-import","outcome":"imported","envelopeVersion":4,
+                 "imported":12,"alreadyPresent":0,"invalid":0,"duplicates":0,"at":"…"}
+  ```
+
+  `outcome` is `imported`, `absent` (nothing to import) or `unreadable` (the
+  envelope was not valid JSON; the old app showed an empty list for it too, and
+  the raw value is kept in `legacy_snapshot`). Counts only, never item names.
+
+`expo-sqlite` is a native module, so this needs a fresh Android build; it cannot
+arrive as an over-the-air update.
 
 ## Urgency model
 

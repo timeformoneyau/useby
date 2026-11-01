@@ -60,13 +60,18 @@ Expo SDK 54, Android-first. See README.md for the port history from
 
 - Modules with no value imports (`pending.ts`, `photos.ts`, `edit.ts`,
   `saveScan.ts`, `trust.ts`, …) load directly under Node's type stripping.
-- Modules that reach AsyncStorage or `expo-file-system` (`service.ts`,
-  `storage.ts`, `photoStore.ts`, and `statusUtils.ts` through its
-  extensionless imports) are loaded through `scripts/support/app-loader.mjs`,
-  which compiles them with TypeScript and swaps those two native modules for
-  the in-memory fakes in `scripts/support/fakes.mjs`. Register it at the top
-  of the test file; see `scripts/item-lifecycle.test.mjs`. No app code is
-  stubbed beyond those two modules.
+- The SQLite item database (`src/domain/items/db/`) also loads directly, and
+  is tested against real SQLite via `node:sqlite` with `createNodeDriver()`
+  from `scripts/support/fakes.mjs`; see `scripts/item-database.test.mjs`.
+- Modules that reach AsyncStorage, `expo-file-system` or `expo-sqlite`
+  (`service.ts`, `storage.ts`, `photoStore.ts`, `db/expoDriver.ts`, and
+  `statusUtils.ts` through its extensionless imports) are loaded through
+  `scripts/support/app-loader.mjs`, which compiles them with TypeScript and
+  swaps those three native modules for the stand-ins in
+  `scripts/support/fakes.mjs` (the `expo-sqlite` one is real in-memory
+  SQLite). Register it at the top of the test file; see
+  `scripts/item-lifecycle.test.mjs`. No app code is stubbed beyond those
+  three modules.
 - A `{ todo }` test documents a known gap that is deliberately not fixed yet.
   It reports but does not fail. Do not convert one to a skip or delete it to
   get green; fix the gap or leave it.

@@ -17,9 +17,11 @@
  *      devDependencies, which elides type-only imports the way Metro's Babel
  *      transform does.
  *   2. Resolves extensionless relative imports to `.ts` / `.tsx` / `index.ts`.
- *   3. Swaps the two native modules the service reaches — AsyncStorage and
- *      `expo-file-system` — for in-memory stand-ins that read their state from
- *      `globalThis.__USEBY_STUBS__`, which the test sets up before importing.
+ *   3. Swaps the three native modules the service reaches — AsyncStorage,
+ *      `expo-file-system` and `expo-sqlite` — for stand-ins that read their
+ *      state from `globalThis.__USEBY_STUBS__`, which the test sets up before
+ *      importing. The `expo-sqlite` stand-in is real SQLite (`node:sqlite`),
+ *      not a mock: see `fakes.mjs`.
  *
  * Registered from inside a test file (`register(...)`), so it applies to that
  * file's process only. `node --test` runs every file in its own process, so no
@@ -32,6 +34,7 @@ import ts from 'typescript';
 const STUBS = {
   '@react-native-async-storage/async-storage': 'useby-stub:async-storage',
   'expo-file-system': 'useby-stub:expo-file-system',
+  'expo-sqlite': 'useby-stub:expo-sqlite',
 };
 
 const STUB_SOURCE = {
@@ -46,6 +49,11 @@ const STUB_SOURCE = {
     export const Directory = s.Directory;
     export const File = s.File;
     export const Paths = s.Paths;
+  `,
+  'useby-stub:expo-sqlite': `
+    const s = globalThis.__USEBY_STUBS__?.sqlite;
+    if (!s) throw new Error('set globalThis.__USEBY_STUBS__.sqlite before importing app code');
+    export const openDatabaseAsync = (...args) => s.openDatabaseAsync(...args);
   `,
 };
 

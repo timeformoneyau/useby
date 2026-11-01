@@ -13,7 +13,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { UseByItem, RootStackParamList } from '../types';
 import { DerivedItem } from '../domain/items/types';
-import { getDerivedItems, removeItem } from '../domain/items/service';
+import { getDerivedItems, removeItem, type RemovalReason } from '../domain/items/service';
 import { groupItems, headerCount } from '../domain/items/presentation';
 import { emptyPrefill, failureMessage } from '../domain/scan/mapping';
 import { usePendingScans } from '../domain/scan/usePendingScans';
@@ -48,8 +48,8 @@ export default function MainListScreen() {
     }, [refresh]),
   );
 
-  async function handleRemove(item: UseByItem) {
-    await removeItem(item.id);
+  async function handleRemove(item: UseByItem, reason: RemovalReason) {
+    await removeItem(item.id, reason);
     refresh();
   }
 
@@ -152,8 +152,8 @@ export default function MainListScreen() {
             >
               <ItemCard
                 item={item}
-                onMarkUsed={handleRemove}
-                onDelete={handleRemove}
+                onMarkUsed={(i) => handleRemove(i, 'used')}
+                onDelete={(i) => handleRemove(i, 'deleted')}
                 onOpen={handleOpenItem}
                 isFirst={index === 0}
               />

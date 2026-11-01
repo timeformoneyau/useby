@@ -14,7 +14,7 @@ import { useFocusEffect, useNavigation, useRoute, RouteProp } from '@react-navig
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types';
 import { DerivedItem } from '../domain/items/types';
-import { getDerivedItem, removeItem } from '../domain/items/service';
+import { getDerivedItem, removeItem, type RemovalReason } from '../domain/items/service';
 import { photoStore } from '../domain/items/photoStore';
 import { dateWord, heroText, longDate } from '../domain/items/presentation';
 import { colours, fonts, hit, radius } from '../theme';
@@ -88,12 +88,12 @@ export default function ItemDetailScreen() {
    */
   const actingRef = useRef(false);
 
-  async function remove() {
+  async function remove(reason: RemovalReason) {
     if (actingRef.current || !item) return;
     actingRef.current = true;
 
     try {
-      await removeItem(item.id);
+      await removeItem(item.id, reason);
       navigation.goBack();
     } catch {
       // Let them try again rather than stranding the screen behind a dead
@@ -109,19 +109,17 @@ export default function ItemDetailScreen() {
    * expected end of an item's life, it is what the user just did in the
    * kitchen, and a dialog asking whether they really ate it would be absurd.
    *
-   * Used and Delete are the same operation today. They stay separate in the UI
-   * because they *mean* different things, and recording which one happened
-   * needs the Phase 3B data layer — building half of that distinction now would
-   * have to be undone.
+   * Used and Delete look the same on screen — the item leaves the list — but
+   * the database records which one happened (`used` vs `deleted`).
    */
-  const handleUsed = remove;
+  const handleUsed = () => remove('used');
 
   /** Delete confirms, matching the swipe. This one is a mistake being undone. */
   function handleDelete() {
     if (!item) return;
     Alert.alert('Delete item', `Remove "${item.name}" from UseBy?`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: remove },
+      { text: 'Delete', style: 'destructive', onPress: () => remove('deleted') },
     ]);
   }
 
