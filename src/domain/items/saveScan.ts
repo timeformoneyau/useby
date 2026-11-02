@@ -37,8 +37,14 @@ import type { CreateItemInput } from './types';
 export interface SaveScanDeps {
   /** Copy into durable storage. Returns the stored filename, or null. */
   retain: (scanId: string, sourceUri: string) => string | null;
-  /** Persist the item. May reject; the caller decides what that means. */
-  create: (input: CreateItemInput) => Promise<unknown>;
+  /**
+   * Persist the item. May reject; the caller decides what that means.
+   *
+   * Given the draft's `scanId` when there is one, so the item write can retire
+   * the persisted draft in the same transaction and a repeated Save of the same
+   * draft resolves to the same item (see `service.createItem`).
+   */
+  create: (input: CreateItemInput, scanId?: string) => Promise<unknown>;
   /** Retire the pending draft, releasing its temporary image. */
   release: (scanId: string) => void;
 }
@@ -65,7 +71,7 @@ export async function saveScannedItem(
   const photo =
     scanId && photoUri ? (deps.retain(scanId, photoUri) ?? undefined) : undefined;
 
-  await deps.create({ ...input, ...(photo ? { photo } : {}) });
+  await deps.create({ ...input, ...(photo ? { photo } : {}) }, scanId);
 
   // Only now. Reversed, a failed write would take the scan with it and leave
   // the user with neither an item nor the draft they were editing.

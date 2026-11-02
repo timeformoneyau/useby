@@ -65,6 +65,7 @@ Fixtures: `milk`, `yoghurt`, `chicken`, `cheese`, `unreadable`,
 | `flows/dashboard-sorted.yaml` | Four shots in one Multiple items visit, Finish, each reviewed from Home; list sorted most-urgent-first under the right headings |
 | `flows/retake.yaml` | Retake replaces its draft from a Home draft (Single item: back Home, one draft) and from the camera card (Multiple items: back to the same camera, next shot is a new item, Finish reaches Home) |
 | `flows/item-detail-edit.yaml` | Item Detail shows the retained photo; editing the name keeps the item and its photo; photo on Home and Detail survive an app restart; Used it from Item Detail |
+| `flows/pending-restart.yaml` | A scan killed mid-recognition comes back after a restart as "Didn't finish checking" (no spinner), retries on tap; a finished result killed before Save comes back as it was without being re-read; Save moves it into the list once and a further restart leaves no draft |
 | `flows/reminders.yaml` | Reminders off until turned on; turning on asks permission; saving an item schedules two (read back from Android's own pending list); opting in to the day after makes three; changing the time keeps three; a restart reconciles to the same; Used it clears them; turning off clears all; refused permission leaves them off with a way to settings |
 | `flows/mark-used-delete.yaml` | Row swipe: "Used it" removes; Delete asks, Cancel keeps, confirm removes |
 

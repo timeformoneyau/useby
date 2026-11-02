@@ -105,7 +105,7 @@ function PendingRow({
 }) {
   const { title, note, tappable } = pendingSummary(scan);
   const waiting = scan.status === 'queued' || scan.status === 'active';
-  const failed = scan.status === 'failed';
+  const failed = scan.status === 'failed' || scan.status === 'interrupted';
 
   const body = (
     <View style={[styles.row, !isLast && styles.rowDivided]}>

@@ -16,6 +16,7 @@ import { InstrumentSerif_400Regular } from '@expo-google-fonts/instrument-serif/
 import { RootStackParamList } from './src/types';
 import { sweepOrphanPhotos } from './src/domain/items/service';
 import { onItemsChanged } from './src/domain/items/events';
+import { restorePendingScans } from './src/domain/scan/queue';
 import { reminderScheduler, startReminders } from './src/domain/notifications/reminders';
 import { colours } from './src/theme';
 
@@ -67,6 +68,8 @@ export default function App() {
    */
   useEffect(() => {
     void sweepOrphanPhotos().catch(() => {});
+    // Drafts photographed before the app was last closed. See `queue.ts`.
+    void restorePendingScans().catch(() => {});
   }, []);
 
   /**

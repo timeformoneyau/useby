@@ -373,6 +373,36 @@ reasoning are in `src/domain/items/db/schema.ts`; the rules are:
   envelope was not valid JSON; the old app showed an empty list for it too, and
   the raw value is kept in `legacy_snapshot`). Counts only, never item names.
 
+### Pending scans (photographed, not yet saved)
+
+Drafts survive the app being killed. Each one is a row in `pending_scans`
+(schema v2) and its photo is moved at the shutter from the cache, which Android
+may reclaim, into `Documents/pending/`.
+
+- **After a restart**, finished results (ready or failed) come back exactly as
+  they were, with no second model request. A scan that was queued or being read
+  comes back as **"Didn't finish checking — Tap to try again"**. No request is
+  assumed to have survived the process, and the retry is explicit, under a new
+  scan id.
+- **Never a permanent spinner.** A request still unanswered after 60s (the
+  client gives up at 30s) becomes the same retryable state. A late answer is
+  still accepted.
+- **Save is idempotent and atomic.** The item is written with mutation id
+  `save:<scanId>`, and the draft row is deleted in the same transaction. Saving
+  the same draft twice, or again after a crash, gives one item. The saved item
+  gets its own copy in `photos/`; the draft copy is then deleted.
+- **Clean-up.** Retake and Discard delete the draft row, and the photo only
+  after that delete has persisted. At start-up, drafts older than 30 days are
+  dropped, and any pending photo no draft names is deleted.
+
+```bash
+adb logcat -d -s ReactNativeJS | grep useby.pending
+```
+
+```
+useby.pending {"stage":"restore","restored":3,"interrupted":1,"expired":0,"swept":0}
+```
+
 `expo-sqlite` is a native module, so this needs a fresh Android build; it cannot
 arrive as an over-the-air update.
 
