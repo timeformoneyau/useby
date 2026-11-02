@@ -45,6 +45,22 @@ export interface LegacyImportReport {
   at: string;
 }
 
+/**
+ * One pending scan as stored. The scan queue owns the meaning of these fields
+ * (`src/domain/scan/pending.ts`); this module only keeps them durable.
+ */
+export interface PendingScanRow {
+  scan_id: string;
+  status: 'queued' | 'active' | 'ready' | 'failed' | 'interrupted';
+  shutter_at: number;
+  settled_at: number | null;
+  image_file: string | null;
+  /** JSON, or null. */
+  prefill: string | null;
+  /** JSON, or null. */
+  trust: string | null;
+}
+
 export interface ItemDatabaseOptions {
   driver: SqlDriver;
   /** AsyncStorage, for the one-time import. Omit to skip the import entirely. */
@@ -62,8 +78,19 @@ export interface ItemDatabase {
   listActive(): Promise<UseByItem[]>;
   /** One active item, or `null`. */
   getActive(id: string): Promise<UseByItem | null>;
-  /** Insert a new item. Replaying the same `mutationId` returns it unchanged. */
-  create(item: UseByItem, mutationId: string): Promise<UseByItem>;
+  /**
+   * Insert a new item. Replaying the same `mutationId` returns the item that
+   * mutation created, unchanged — so a Save repeated after a crash or a double
+   * tap is one item, not two.
+   *
+   * `consumesPendingScan` deletes that pending-scan row **in the same
+   * transaction**: the draft and the item it became can never both exist.
+   */
+  create(
+    item: UseByItem,
+    mutationId: string,
+    options?: { consumesPendingScan?: string },
+  ): Promise<UseByItem>;
   /**
    * Change an active item. `change` sees the row as it is *inside* the
    * transaction — never a stale copy — and returns the new record, or `null`
@@ -85,7 +112,31 @@ export interface ItemDatabase {
   remove(id: string, reason: RemovalReason, mutationId: string): Promise<UseByItem | null>;
   /** Every photo filename any row still names, for the start-up sweep. */
   referencedPhotos(): Promise<string[]>;
+
+  /** Every pending scan, oldest shutter first. */
+  listPendingScans(): Promise<PendingScanRow[]>;
+  /** Insert or overwrite one pending scan. */
+  putPendingScan(row: PendingScanRow): Promise<void>;
+  /** Delete one pending scan. Idempotent. */
+  deletePendingScan(scanId: string): Promise<void>;
+  /** Retake / retry: delete one and insert its successor, atomically. */
+  replacePendingScan(previousScanId: string, row: PendingScanRow): Promise<void>;
 }
+
+const PENDING_COLUMNS = [
+  'scan_id',
+  'status',
+  'shutter_at',
+  'settled_at',
+  'image_file',
+  'prefill',
+  'trust',
+] as const;
+const PUT_PENDING = `INSERT INTO pending_scans (${PENDING_COLUMNS.join(', ')}, updated_at)
+  VALUES (${PENDING_COLUMNS.map(() => '?').join(', ')}, ?)
+  ON CONFLICT (scan_id) DO UPDATE SET ${PENDING_COLUMNS.slice(1)
+    .map((c) => `${c} = excluded.${c}`)
+    .join(', ')}, updated_at = excluded.updated_at`;
 
 const SELECT_ITEM = `SELECT ${ITEM_COLUMNS.join(', ')}, status, revision FROM items`;
 const INSERT_ITEM = `INSERT INTO items (${ITEM_COLUMNS.join(', ')}) VALUES (${ITEM_COLUMNS.map(() => '?').join(', ')})`;
@@ -333,14 +384,25 @@ export function createItemDatabase(options: ItemDatabaseOptions): ItemDatabase {
         return rows[0] ? rowToItem(rows[0]) : null;
       }),
 
-    create: (item, mutationId) =>
+    create: (item, mutationId, options) =>
       op(() =>
         transaction(async () => {
-          if (await mutationSeen(mutationId)) {
-            const existing = await readRow(item.id);
+          const seen = await driver.all<{ item_id: string }>(
+            'SELECT item_id FROM mutations WHERE id = ?',
+            [mutationId],
+          );
+          if (seen[0]) {
+            // A replay. Answer with what the first application created — its
+            // id, not the fresh one this call was handed.
+            const existing = await readRow(seen[0].item_id);
             if (existing) return rowToItem(existing);
           }
           await driver.run(INSERT_ITEM, rowValues(itemToRow(item)));
+          if (options?.consumesPendingScan) {
+            await driver.run('DELETE FROM pending_scans WHERE scan_id = ?', [
+              options.consumesPendingScan,
+            ]);
+          }
           await record({
             id: mutationId,
             itemId: item.id,
@@ -430,6 +492,31 @@ export function createItemDatabase(options: ItemDatabaseOptions): ItemDatabase {
         );
         return rows.map((r) => r.photo);
       }),
+
+    listPendingScans: () =>
+      op(() =>
+        driver.all<PendingScanRow>(
+          `SELECT ${PENDING_COLUMNS.join(', ')} FROM pending_scans ORDER BY shutter_at, scan_id`,
+        ),
+      ),
+
+    putPendingScan: (row) =>
+      op(async () => {
+        await driver.run(PUT_PENDING, [...PENDING_COLUMNS.map((c) => row[c]), now()]);
+      }),
+
+    deletePendingScan: (scanId) =>
+      op(async () => {
+        await driver.run('DELETE FROM pending_scans WHERE scan_id = ?', [scanId]);
+      }),
+
+    replacePendingScan: (previousScanId, row) =>
+      op(() =>
+        transaction(async () => {
+          await driver.run('DELETE FROM pending_scans WHERE scan_id = ?', [previousScanId]);
+          await driver.run(PUT_PENDING, [...PENDING_COLUMNS.map((c) => row[c]), now()]);
+        }),
+      ),
   };
 }
 

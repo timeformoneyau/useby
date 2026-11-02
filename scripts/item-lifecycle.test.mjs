@@ -176,7 +176,7 @@ test('a created item survives a reload, sorted and derived', async () => {
   await service.createItem({ name: 'Cheddar', expiryDate: day(-3), dateType: 'best_before', source: 'photo' });
 
   const env = persisted();
-  assert.equal(env.version, 1, 'SQLite schema version');
+  assert.equal(env.version, 2, 'SQLite schema version');
   assert.equal(env.items.length, 2);
 
   const list = await service.getDerivedItems();
@@ -505,4 +505,26 @@ test('Used / Delete, editing and the start-up sweep leave other items\' photos s
   const left = await service.getDerivedItems();
   assert.deepEqual(left.map((i) => i.name).sort(), ['Three', 'Two edited']);
   for (const item of left) assert.equal(photoStore.stateFor(item.photo).kind, 'ok', item.name);
+});
+
+/* ---------------------------------------------------------------------------
+ * Saving a pending draft through the real service.
+ * ------------------------------------------------------------------------ */
+
+test('saving a draft twice through the service is one item, and retires the draft', async () => {
+  const db = stubs.sqlite.raw();
+  db.prepare(
+    "INSERT INTO pending_scans (scan_id, status, shutter_at, updated_at) VALUES ('p-x', 'ready', 1, 'now')",
+  ).run();
+
+  const first = await service.createItem({ name: 'Milk', expiryDate: day(3), source: 'photo' }, 'p-x');
+  const again = await service.createItem({ name: 'Milk', expiryDate: day(3), source: 'photo' }, 'p-x');
+  assert.equal(again.id, first.id);
+  assert.equal(persisted().items.length, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM pending_scans').get().n, 0);
+
+  // A manual add is unaffected: every one is its own item.
+  await service.createItem({ name: 'Bread', expiryDate: day(1) });
+  await service.createItem({ name: 'Bread', expiryDate: day(1) });
+  assert.equal(persisted().items.length, 3);
 });

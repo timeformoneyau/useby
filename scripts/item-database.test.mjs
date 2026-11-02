@@ -308,3 +308,76 @@ test('a write cut off mid-transaction by the process dying is gone after restart
     cleanup();
   }
 });
+
+/* ---------------------------------------------------------------------------
+ * Schema v2 (pending scans) on top of a v1 database from the previous build.
+ * ------------------------------------------------------------------------ */
+
+test('a v1 database upgrades to v2 in place, items and history untouched', async () => {
+  const { MIGRATIONS } = await import('../src/domain/items/db/schema.ts');
+  const driver = createNodeDriver();
+  // Exactly what the previous build left: schema v1 and some data.
+  driver.db.exec(MIGRATIONS[0].sql);
+  driver.db.exec('PRAGMA user_version = 1');
+  driver.db
+    .prepare("INSERT INTO items (id, name, expiry_date, source, status) VALUES ('old', 'Jam', '2026-12-01', 'manual', 'active')")
+    .run();
+  const before = driver.db.prepare('SELECT * FROM items').all();
+
+  const { db } = open(driver);
+  await db.ready();
+  assert.equal(driver.db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.deepEqual(driver.db.prepare('SELECT * FROM items').all(), before);
+  assert.deepEqual(await db.listPendingScans(), []);
+});
+
+test('an interrupted v1→v2 upgrade rolls back to v1 and retries', async () => {
+  const { MIGRATIONS } = await import('../src/domain/items/db/schema.ts');
+  const driver = createNodeDriver();
+  driver.db.exec(MIGRATIONS[0].sql);
+  driver.db.exec('PRAGMA user_version = 1');
+  driver.failOn((sql) => sql === 'PRAGMA user_version = 2');
+
+  const { db } = open(driver);
+  await assert.rejects(db.ready());
+  assert.equal(driver.db.prepare('PRAGMA user_version').get().user_version, 1);
+  assert.equal(
+    driver.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'pending_scans'").get().n,
+    0,
+  );
+  await db.ready();
+  assert.equal(driver.db.prepare('PRAGMA user_version').get().user_version, 2);
+});
+
+test('creating an item from a draft retires the draft row in the same transaction', async () => {
+  const { driver, db } = open();
+  await db.putPendingScan({ scan_id: 'p-a', status: 'ready', shutter_at: 1, settled_at: 2, image_file: 'pending-p-a.jpg', prefill: '{}', trust: null });
+  await db.putPendingScan({ scan_id: 'p-b', status: 'ready', shutter_at: 3, settled_at: 4, image_file: null, prefill: null, trust: null });
+
+  const first = await db.create(item('one'), 'save:p-a', { consumesPendingScan: 'p-a' });
+  const again = await db.create(item('two'), 'save:p-a', { consumesPendingScan: 'p-a' });
+  assert.equal(again.id, first.id, 'a replay answers with the item the first save created');
+  assert.equal(count(driver, 'items'), 1);
+  assert.deepEqual((await db.listPendingScans()).map((r) => r.scan_id), ['p-b'], 'only its own draft');
+});
+
+test('pending-scan writes overwrite in place and replace atomically', async () => {
+  const { driver, db } = open();
+  const row = { scan_id: 'p-a', status: 'queued', shutter_at: 1, settled_at: null, image_file: 'pending-p-a.jpg', prefill: null, trust: null };
+  await db.putPendingScan(row);
+  await db.putPendingScan({ ...row, status: 'ready', settled_at: 5, prefill: '{"name":"Milk"}' });
+  assert.deepEqual(
+    (await db.listPendingScans()).map((r) => ({ ...r })),
+    [{ ...row, status: 'ready', settled_at: 5, prefill: '{"name":"Milk"}' }],
+  );
+
+  driver.failOn((sql) => sql.startsWith('INSERT INTO pending_scans'));
+  await assert.rejects(db.replacePendingScan('p-a', { ...row, scan_id: 'p-b' }));
+  assert.deepEqual((await db.listPendingScans()).map((r) => r.scan_id), ['p-a'], 'delete rolled back with the insert');
+
+  await db.replacePendingScan('p-a', { ...row, scan_id: 'p-b' });
+  assert.deepEqual((await db.listPendingScans()).map((r) => r.scan_id), ['p-b']);
+  await db.deletePendingScan('p-b');
+  await db.deletePendingScan('p-b');
+  assert.deepEqual(await db.listPendingScans(), []);
+});

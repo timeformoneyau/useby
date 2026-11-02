@@ -119,6 +119,41 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    /**
+     * Pending scans: photographed, not yet reviewed and saved.
+     *
+     * Until v2 the pending-scan queue lived only in memory, so Android killing
+     * the app mid-recognition lost the photograph and the scan with it. One row
+     * per draft, keyed by the scan id minted at the shutter:
+     *
+     * - `status` as last recorded. `queued` and `active` are never trusted after
+     *   a restart — no request survives process death — and are restored as
+     *   `interrupted`, which offers an explicit retry.
+     * - `image_file` is a **filename** in the app's pending-photos directory,
+     *   never an absolute URI, for the same reason `items.photo` is.
+     * - `prefill` and `trust` are the recognition result as JSON, so a finished
+     *   scan is restored without asking the model again.
+     *
+     * A row is deleted in the same transaction that saves the item it became
+     * (see `itemDatabase.create`), so a draft and its saved item never both
+     * exist after a crash.
+     */
+    version: 2,
+    sql: `
+      CREATE TABLE pending_scans (
+        scan_id     TEXT PRIMARY KEY NOT NULL,
+        status      TEXT NOT NULL
+                    CHECK (status IN ('queued', 'active', 'ready', 'failed', 'interrupted')),
+        shutter_at  INTEGER NOT NULL,
+        settled_at  INTEGER,
+        image_file  TEXT,
+        prefill     TEXT,
+        trust       TEXT,
+        updated_at  TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

@@ -44,8 +44,23 @@ export async function getDerivedItem(itemId: string): Promise<DerivedItem | null
   return item ? deriveItem(item) : null;
 }
 
-/** Create a new item and persist it. */
-export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
+/**
+ * Create a new item and persist it.
+ *
+ * `fromScan` is the pending draft this item is the reviewed result of. Two
+ * things follow from it, both in the item's own transaction:
+ *
+ * - the persisted draft is deleted, so after any crash there is either the
+ *   draft or the item, never both;
+ * - the mutation id is derived from the scan (`save:<scanId>`), so saving the
+ *   same draft twice — a double tap, or a retry after the app died between the
+ *   write and the screen closing — returns the item already created instead of
+ *   adding a second one.
+ */
+export async function createItem(
+  input: CreateItemInput,
+  fromScan?: string,
+): Promise<DerivedItem> {
   const now = new Date().toISOString();
   const item: UseByItem = {
     // A UUID for new items. Items saved before SQLite keep their old ids.
@@ -65,7 +80,11 @@ export async function createItem(input: CreateItemInput): Promise<DerivedItem> {
     updatedAt: now,
   };
 
-  const saved = await (await itemDatabase()).create(item, newId());
+  const saved = await (await itemDatabase()).create(
+    item,
+    fromScan ? `save:${fromScan}` : newId(),
+    fromScan ? { consumesPendingScan: fromScan } : undefined,
+  );
   emitItemsChanged();
 
   return deriveItem(saved);

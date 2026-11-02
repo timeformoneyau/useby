@@ -23,6 +23,16 @@
  *      that the user opens into the existing Review & Save editor. There is no
  *      code path from here into `items/service`.
  *
+ * And, since 2 Nov 2026, a fourth:
+ *
+ *   4. **A scan outlives the process.** Every state change is handed to an
+ *      injected `store` (SQLite in the app; see `pendingStore.ts`), the photo
+ *      is moved out of the cache into durable storage at the shutter, and
+ *      `restore` brings outstanding drafts back after a restart. A finished
+ *      result comes back as it was — no second model request. A scan that was
+ *      queued or in flight comes back `interrupted`, because no request
+ *      survives process death, and is retried only when the user asks.
+ *
  * Deliberately a factory rather than a bare module singleton. The singleton
  * lives one file over in `queue.ts`, wired to the real network call; this file
  * has no value imports at all, so Node's type stripping can load it directly
@@ -63,7 +73,42 @@ export const MAX_ACTIVE = 3;
  * answered, the pipeline worked, and the editor is built to be completed by
  * hand — treating that as a failure would misreport what happened.
  */
-export type PendingStatus = 'queued' | 'active' | 'ready' | 'failed';
+export type PendingStatus = 'queued' | 'active' | 'ready' | 'failed' | 'interrupted';
+
+/**
+ * How long a request may stay `active` before the scan is treated as stuck.
+ *
+ * The client aborts at 30s, so a runner that has not settled at twice that has
+ * gone wrong in a way nothing else will notice. Without this a hung promise is a
+ * row that says "Checking…" for ever. The scan becomes `interrupted` (tap to
+ * try again), its slot is freed, and if the original request does answer late
+ * the answer is still accepted — it is the same photograph.
+ */
+export const STALE_MS = 60_000;
+
+/**
+ * How long an unreviewed draft is kept across restarts.
+ *
+ * A photograph of groceries nobody has looked at in a month describes food that
+ * is long gone; keeping it for ever is how a draft list and a directory of
+ * photos grow without bound. Applied at restore only, never to a draft in the
+ * current session, and logged when it happens.
+ */
+export const MAX_DRAFT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Where scan state is kept durable. Every method may be asynchronous; calls are
+ * made in the order the state changed, and the store must apply them in that
+ * order (SQLite's single serial queue does). A rejected promise means the
+ * change did not persist — the in-memory queue carries on regardless, and a
+ * photo whose removal did not persist is kept rather than deleted.
+ */
+export interface PendingStore {
+  put(scan: PendingScan): Promise<void> | void;
+  remove(scanId: string): Promise<void> | void;
+  /** Delete `previousScanId` and put `scan`, atomically. */
+  replace(previousScanId: string, scan: PendingScan): Promise<void> | void;
+}
 
 export interface PendingScan {
   scanId: string;
@@ -176,11 +221,39 @@ export interface ScanQueue {
   replace(previousScanId: string, job: ScanJob): void;
   /** Forget a scan — saved, or discarded by hand. Idempotent. */
   remove(scanId: string): void;
+  /**
+   * Send an `interrupted` scan again. Explicit, user-initiated, and the only
+   * way an interrupted scan reaches the model a second time.
+   *
+   * The retry gets a fresh scan id, exactly as a retake does, so the two
+   * requests stay distinguishable in the logs; it keeps the photograph and the
+   * place in the strip. Returns false, changing nothing, when the scan is not
+   * interrupted or its photo can no longer be read — the caller then opens the
+   * editor so the item can be typed in instead.
+   */
+  retry(scanId: string): boolean;
+  /**
+   * Bring back drafts persisted by an earlier process. Call once at start-up.
+   *
+   * `queued` / `active` come back `interrupted`; drafts older than
+   * `MAX_DRAFT_AGE_MS` are dropped (and their photos released). A scan already
+   * in memory — photographed since launch — is never overwritten. Calling it
+   * again restores nothing twice.
+   */
+  restore(saved: readonly PendingScan[]): RestoreReport;
   get(scanId: string): PendingScan | undefined;
   /** Stable reference between mutations, as `useSyncExternalStore` requires. */
   snapshot(): readonly PendingScan[];
   subscribe(listener: () => void): () => void;
   counts(): ScanCounts;
+}
+
+export interface RestoreReport {
+  restored: number;
+  /** Were queued or in flight when the process died. */
+  interrupted: number;
+  /** Older than `MAX_DRAFT_AGE_MS`, dropped. */
+  expired: number;
 }
 
 export interface ScanCounts {
@@ -212,8 +285,74 @@ export function createScanQueue(options: {
    */
   now?: () => number;
   cap?: number;
+  /** Durable copy of the queue's state. Omit for an in-memory-only queue. */
+  store?: PendingStore;
+  /**
+   * Take ownership of a freshly captured image: move it somewhere durable and
+   * return its new URI. Returns the original URI if it could not be moved, in
+   * which case the draft still works this session but may lose its photo on a
+   * restart. Synchronous so `add` stays synchronous.
+   */
+  adoptImage?: (scanId: string, imageUri: string) => string;
+  /** Read a retained image back as base64 for a retry, or null if it is gone. */
+  readImage?: (imageUri: string) => string | null;
+  /** Mint a scan id for a retry. Required for `retry` to do anything. */
+  newScanId?: () => string;
+  staleMs?: number;
+  maxDraftAgeMs?: number;
 }): ScanQueue {
-  const { run, onRelease, now = Date.now, cap = MAX_ACTIVE } = options;
+  const {
+    run,
+    onRelease,
+    now = Date.now,
+    cap = MAX_ACTIVE,
+    store,
+    adoptImage,
+    readImage,
+    newScanId,
+    staleMs = STALE_MS,
+    maxDraftAgeMs = MAX_DRAFT_AGE_MS,
+  } = options;
+
+  /**
+   * The current attempt for each scan id. A settle whose attempt is not the
+   * current one is ignored, which is what makes a duplicate, late or
+   * superseded result harmless.
+   */
+  interface Attempt {
+    settled: boolean;
+    /** Marked stale: its slot has already been given back. */
+    abandoned: boolean;
+    timer?: ReturnType<typeof setTimeout>;
+  }
+  const attempts = new Map<string, Attempt>();
+  let restored = false;
+
+  /** Run `then` once `pending` has persisted; skip it if persisting failed. */
+  function afterPersist(pending: Promise<void> | void, then: () => void): void {
+    if (pending && typeof (pending as Promise<void>).then === 'function') {
+      (pending as Promise<void>).then(then, () => {
+        // Not persisted. Keep the file: the row that names it may still exist,
+        // and a restored draft without its photo is worse than a stray file
+        // (which the start-up sweep collects once nothing names it).
+      });
+    } else {
+      then();
+    }
+  }
+
+  /** Persist without waiting, and without letting a failure escape. */
+  function persist(write: () => Promise<void> | void): void {
+    if (!store) return;
+    try {
+      const pending = write();
+      if (pending && typeof (pending as Promise<void>).catch === 'function') {
+        (pending as Promise<void>).catch(() => {});
+      }
+    } catch {
+      // A store that throws synchronously is a store that did not persist.
+    }
+  }
 
   const scans = new Map<string, PendingScan>();
   /**
@@ -259,16 +398,42 @@ export function createScanQueue(options: {
 
       active += 1;
       scans.set(scanId, { ...scan, status: 'active' });
+      const attempt: Attempt = { settled: false, abandoned: false };
+      attempts.set(scanId, attempt);
+      attempt.timer = setTimeout(() => markStale(scanId, attempt), staleMs);
+      // Under Node (the offline suite) a pending watchdog must not keep the
+      // process alive; React Native timers have no `unref` and need none.
+      (attempt.timer as { unref?: () => void }).unref?.();
       // Runs synchronously as far as its first `await`, so the request is on
       // the wire before this returns.
-      void start(scanId, entry.job, entry.queuedAt);
+      void start(scanId, entry.job, entry.queuedAt, attempt);
     }
+  }
+
+  /**
+   * A request that has been `active` for `staleMs`. Its slot is given back so
+   * the queue cannot wedge behind it, and the scan becomes reviewable instead
+   * of spinning. If the request does answer later, `start` still settles it.
+   */
+  function markStale(scanId: string, attempt: Attempt): void {
+    if (attempt.settled || attempt.abandoned || attempts.get(scanId) !== attempt) return;
+    const scan = scans.get(scanId);
+    if (!scan || scan.status !== 'active') return;
+    attempt.abandoned = true;
+    active -= 1;
+    jobs.delete(scanId);
+    const stale: PendingScan = { ...scan, status: 'interrupted', settledAt: now() };
+    scans.set(scanId, stale);
+    persist(() => store?.put(stale));
+    pump();
+    publish();
   }
 
   async function start(
     scanId: string,
     job: ScanJob,
     queuedAt: number,
+    attempt: Attempt,
   ): Promise<void> {
     const queuedMs = Math.max(0, now() - queuedAt);
     let outcome: ScanOutcome | null = null;
@@ -282,12 +447,13 @@ export function createScanQueue(options: {
       // the scan still settles into a reviewable state rather than vanishing.
       outcome = null;
     } finally {
-      active -= 1;
+      if (attempt.timer !== undefined) clearTimeout(attempt.timer);
+      if (!attempt.abandoned) active -= 1;
       // The payload goes here and not a moment later. Otherwise a run of scans
       // reviewed but not yet saved would hold a photograph's worth of base64
       // each, for as long as the person took to look at them.
       jobs.delete(scanId);
-      settle(scanId, outcome);
+      settle(scanId, attempt, outcome);
       pump();
       publish();
     }
@@ -300,19 +466,33 @@ export function createScanQueue(options: {
    * inherits the original's, which is the only thing keeping its card from
    * jumping to the end of the strip.
    */
-  function enqueue(job: ScanJob, shutterAt: number): void {
-    scans.set(job.scanId, {
+  function enqueue(job: ScanJob, shutterAt: number): PendingScan {
+    const scan: PendingScan = {
       scanId: job.scanId,
       status: 'queued',
       shutterAt,
       imageUri: job.imageUri,
-    });
+    };
+    scans.set(job.scanId, scan);
     jobs.set(job.scanId, { job, queuedAt: now() });
     waiting.push(job.scanId);
     pump();
+    return scan;
   }
 
-  function settle(scanId: string, outcome: ScanOutcome | null): void {
+  /** Move a fresh capture's image somewhere durable, if the wiring can. */
+  function adopted(job: ScanJob): ScanJob {
+    if (!adoptImage) return job;
+    let imageUri = job.imageUri;
+    try {
+      imageUri = adoptImage(job.scanId, job.imageUri);
+    } catch {
+      // Keep the cache copy. This session is unaffected.
+    }
+    return imageUri === job.imageUri ? job : { ...job, imageUri };
+  }
+
+  function settle(scanId: string, attempt: Attempt, outcome: ScanOutcome | null): void {
     const scan = scans.get(scanId);
 
     // Discarded while the request was in the air. The result is dropped on
@@ -321,13 +501,23 @@ export function createScanQueue(options: {
     // betrayal of that.
     if (!scan) return;
 
-    scans.set(scanId, {
+    // Only the current attempt may settle a scan, and only once. A duplicate
+    // callback, or the answer to a request this scan has since moved on from,
+    // changes nothing. A stale-marked attempt that answers late is still the
+    // current one, so its result is kept rather than thrown away.
+    if (attempts.get(scanId) !== attempt || attempt.settled) return;
+    if (scan.status !== 'active' && scan.status !== 'interrupted') return;
+    attempt.settled = true;
+
+    const settled: PendingScan = {
       ...scan,
       status: outcome?.ok ? 'ready' : 'failed',
       settledAt: now(),
       prefill: outcome?.prefill,
       trust: outcome?.trust,
-    });
+    };
+    scans.set(scanId, settled);
+    persist(() => store?.put(settled));
   }
 
   /**
@@ -337,12 +527,35 @@ export function createScanQueue(options: {
    * single place the file can be deleted. `remove` and `replace` both go
    * through it rather than each remembering to release.
    */
-  function forget(scanId: string): boolean {
+  function forget(scanId: string, options: { keepImage?: boolean; persisted?: Promise<void> | void } = {}): boolean {
     const scan = scans.get(scanId);
     const had = scans.delete(scanId);
     jobs.delete(scanId);
-    if (scan?.imageUri && onRelease) onRelease(scan.imageUri);
+    const attempt = attempts.get(scanId);
+    if (attempt?.timer !== undefined) clearTimeout(attempt.timer);
+    attempts.delete(scanId);
+    // The file goes only once its removal from the store has persisted. Freed
+    // first, a crash in between would restore a draft whose photo is gone.
+    if (!options.keepImage && scan?.imageUri && onRelease) {
+      const uri = scan.imageUri;
+      afterPersist(options.persisted, () => onRelease(uri));
+    }
     return had;
+  }
+
+  /** Call the store, swallowing a synchronous throw. */
+  function call(write: () => Promise<void> | void): Promise<void> | void {
+    if (!store) return undefined;
+    try {
+      const result = write();
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        // Handled by `afterPersist`; this only stops an unhandled rejection.
+        (result as Promise<void>).catch(() => {});
+      }
+      return result;
+    } catch {
+      return Promise.reject(new Error('store failed'));
+    }
   }
 
   return {
@@ -352,7 +565,8 @@ export function createScanQueue(options: {
       // failure it prevents is a duplicate item in someone's list.
       if (scans.has(job.scanId)) return;
 
-      enqueue(job, job.capture.shutterAt);
+      const scan = enqueue(adopted(job), job.capture.shutterAt);
+      persist(() => store?.put(scan));
       publish();
     },
 
@@ -367,15 +581,97 @@ export function createScanQueue(options: {
       // any late result belonging to it are all released before the new one
       // takes its place — and `settle` already drops a result whose scan has
       // gone, so an in-flight original cannot resurrect itself here.
-      forget(previousScanId);
-      enqueue(job, shutterAt);
+      //
+      // Persisted as one atomic replace, and the superseded photo is released
+      // only once that has landed.
+      const next = adopted(job);
+      const nextScan: PendingScan = {
+        scanId: next.scanId,
+        status: 'queued',
+        shutterAt,
+        imageUri: next.imageUri,
+      };
+      const persisted = call(() => store?.replace(previousScanId, nextScan));
+      forget(previousScanId, { persisted });
+      enqueue(next, shutterAt);
       publish();
     },
 
     remove(scanId) {
       // `waiting` is left alone; `pump` skips ids with no job. Splicing it here
       // would be the same outcome with an extra way to get the indices wrong.
-      if (forget(scanId)) publish();
+      if (!scans.has(scanId)) return;
+      const persisted = call(() => store?.remove(scanId));
+      forget(scanId, { persisted });
+      publish();
+    },
+
+    retry(scanId) {
+      const scan = scans.get(scanId);
+      if (!scan || scan.status !== 'interrupted' || !scan.imageUri || !newScanId) return false;
+
+      let imageBase64: string | null = null;
+      try {
+        imageBase64 = readImage ? readImage(scan.imageUri) : null;
+      } catch {
+        imageBase64 = null;
+      }
+      if (!imageBase64) return false;
+
+      const job: ScanJob = {
+        scanId: newScanId(),
+        imageBase64,
+        imageUri: scan.imageUri,
+        // No camera or resize on a retry: the image is the one already sent.
+        capture: { shutterAt: scan.shutterAt, captureMs: 0, resizeMs: 0 },
+      };
+      const nextScan: PendingScan = {
+        scanId: job.scanId,
+        status: 'queued',
+        shutterAt: scan.shutterAt,
+        imageUri: scan.imageUri,
+      };
+      // The photograph moves to the retry rather than being released and
+      // re-adopted: one file, one owner at every moment.
+      call(() => store?.replace(scanId, nextScan));
+      forget(scanId, { keepImage: true });
+      enqueue(job, scan.shutterAt);
+      publish();
+      return true;
+    },
+
+    restore(saved) {
+      const report: RestoreReport = { restored: 0, interrupted: 0, expired: 0 };
+      if (restored) return report;
+      restored = true;
+
+      const cutoff = now() - maxDraftAgeMs;
+      for (const row of saved) {
+        // Photographed since launch, or listed twice: memory wins.
+        if (scans.has(row.scanId)) continue;
+
+        if (row.shutterAt < cutoff) {
+          report.expired += 1;
+          const persisted = call(() => store?.remove(row.scanId));
+          const uri = row.imageUri;
+          if (uri && onRelease) afterPersist(persisted, () => onRelease(uri));
+          continue;
+        }
+
+        let scan = row;
+        if (row.status === 'queued' || row.status === 'active') {
+          // Nothing is still running: the process that sent it is gone.
+          scan = { ...row, status: 'interrupted', settledAt: row.settledAt ?? now() };
+          report.interrupted += 1;
+          const changed = scan;
+          persist(() => store?.put(changed));
+        }
+        scans.set(scan.scanId, scan);
+        report.restored += 1;
+      }
+
+      if (report.restored > 0 || report.expired > 0) publish();
+      return report;
     },
 
     get: (scanId) => scans.get(scanId),
@@ -426,6 +722,16 @@ export function pendingSummary(scan: PendingScan): {
 } {
   if (scan.status === 'queued' || scan.status === 'active') {
     return { title: 'Checking…', note: '', tappable: false };
+  }
+
+  // Never a spinner: the request it was waiting on is gone (the app was closed,
+  // or it took far too long). With the photo still here, tapping sends it
+  // again; without it, there is nothing to send and the row opens the editor
+  // like any other unreadable scan.
+  if (scan.status === 'interrupted') {
+    return scan.imageUri
+      ? { title: "Didn't finish checking", note: 'Tap to try again', tappable: true }
+      : { title: "Couldn't read that one", note: 'Tap to type it in', tappable: true };
   }
 
   const prefill = scan.prefill;

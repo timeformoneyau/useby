@@ -20,6 +20,7 @@ import { usePendingScans } from '../domain/scan/usePendingScans';
 import type { PendingScan } from '../domain/scan/pending';
 import ItemCard from '../components/ItemCard';
 import PendingScansStrip from '../components/PendingScansStrip';
+import { scanQueue } from '../domain/scan/queue';
 import { colours, fonts, hit, radius } from '../theme';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Main'>;
@@ -74,6 +75,9 @@ export default function MainListScreen() {
    * instead of a blank screen or a crash.
    */
   function handleOpenScan(scan: PendingScan) {
+    // An interrupted scan is sent again, on request. Only if that is not
+    // possible (its photo is gone) does it open the editor to be typed in.
+    if (scan.status === 'interrupted' && scanQueue.retry(scan.scanId)) return;
     navigation.navigate('Add', {
       prefill: scan.prefill ?? emptyPrefill('photo', failureMessage('server')),
       scanId: scan.scanId,

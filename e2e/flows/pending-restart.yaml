@@ -1,0 +1,96 @@
+# Drafts survive the app being killed.
+#
+# - Killed while a scan is still being read (`slow-milk` takes six seconds):
+#   after a restart the draft is there, with its photo, saying it did not
+#   finish — never a spinner for a request that died with the process.
+# - Tapping it sends the photo again. The answer arrives on the same row.
+# - Killed again after the answer but before Save: the result comes back as it
+#   was. The stand-in proxy answers `milk` by default after a restart, so seeing
+#   "Greek yoghurt" proves the restored result was not fetched again.
+# - Saving it moves it into the list exactly once, and a further restart shows
+#   the item and no leftover draft.
+appId: com.useby.app
+name: Pending scans survive a restart
+tags:
+  - must-have
+---
+- runFlow: common/launch-clean.yaml
+
+# Single Item: photo taken, straight home, answer still six seconds away.
+- runFlow:
+    file: common/open-camera.yaml
+    env:
+      FIXTURE: slow-milk
+- tapOn: "Capture"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 4000
+- assertVisible: "Checking…"
+
+# The process dies mid-request.
+- stopApp
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: ".*isn't responding.*"
+    commands:
+      - tapOn: "Wait"
+- extendedWaitUntil:
+    visible: "Didn't finish checking"
+    timeout: 30000
+- assertVisible: "JUST SCANNED"
+- assertVisible: "Tap to try again"
+- assertNotVisible: "Checking…"
+- assertVisible: "Nothing to keep an eye on yet."
+
+# Retry, explicitly. This answer is the yoghurt fixture.
+- openLink: "useby://e2e?fixture=yoghurt"
+- tapOn: "Didn't finish checking"
+- extendedWaitUntil:
+    visible: "Greek yoghurt"
+    timeout: 20000
+- assertVisible: "Ready to review"
+- assertVisible: "Nothing to keep an eye on yet."
+
+# Killed after the answer, before Save: restored as it was, not re-read.
+- stopApp
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: ".*isn't responding.*"
+    commands:
+      - tapOn: "Wait"
+- extendedWaitUntil:
+    visible: "Greek yoghurt"
+    timeout: 30000
+- assertVisible: "Ready to review"
+- assertNotVisible: "Milk"
+- assertVisible: "Nothing to keep an eye on yet."
+
+# Review & Save, then one more restart.
+- tapOn: "Greek yoghurt"
+- assertVisible: "Here's what we found"
+- tapOn: "Save item"
+- extendedWaitUntil:
+    visible: "Scan item"
+    timeout: 10000
+- extendedWaitUntil:
+    notVisible: "JUST SCANNED"
+    timeout: 10000
+- assertVisible: "Greek yoghurt"
+
+- stopApp
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: ".*isn't responding.*"
+    commands:
+      - tapOn: "Wait"
+- extendedWaitUntil:
+    visible: "Greek yoghurt"
+    timeout: 30000
+- assertNotVisible: "JUST SCANNED"
+- assertNotVisible: "Didn't finish checking"
